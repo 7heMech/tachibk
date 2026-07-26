@@ -1,0 +1,6 @@
+name = "tachibk"
+compatibility_date = "2026-07-26"
+
+[assets]
+directory = "./public"
+not_found_handling = "single-page-application"
