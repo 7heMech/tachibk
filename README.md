@@ -153,7 +153,8 @@ The public extension index used to resolve Mihon source IDs and base URLs.
 **[Mihon](https://github.com/mihonapp/mihon)**, **[Aniyomi](https://github.com/aniyomiorg/aniyomi)**, **[Komikku](https://github.com/komikku-app/komikku)**, **[TachiyomiSY](https://github.com/jobobby04/TachiyomiSY)**, **[Kotatsu](https://github.com/KotatsuApp/Kotatsu)**, **[Usagi](https://github.com/UsagiApp/Usagi)**
 The apps and formats being converted between. This project is not affiliated with, endorsed by, or supported by any of them — **please don't file issues about this tool on their trackers.**
 
-The Animetail → Anikku protobuf scripts this tool grew out of are my own.
+**[demenik's Animetail → Anikku gist](https://gist.github.com/demenik/d9defc7bc875afc7b0f6fe26c694b8d8)**
+The original Animetail → Anikku protobuf conversion scripts this tool grew out of.
 
 ### A note on licensing
 
