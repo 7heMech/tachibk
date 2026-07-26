@@ -20,6 +20,12 @@ tools/template.html hand-written — markup, CSS, UI wiring; has two placeholder
 public/index.html   the deployable artifact (~116 KB, ~38 KB gzipped)
 ```
 
+`build.ts` and `lib.ts` locate the repo root by walking **up from their own file**
+until they find `tools/template.html`. Do not reintroduce `new URL("../", import.meta.url)`
+— that assumes the script sits exactly one level below the root, and it broke a
+Cloudflare build when `build.ts` was invoked from the repo root instead of `tools/`.
+The build must work from any working directory and from any depth.
+
 Tooling is Bun (`tools/*.ts`), with no runtime dependencies — the ZIP reader and table
 extraction are hand-rolled in `tools/lib.ts`. `bun run build` substitutes `/*__DATA__*/` and `/*__CORE__*/` in the template. **Edit the sources, never `index.html` directly** — the next build overwrites it.
 
@@ -126,9 +132,13 @@ Iterate with `for…of` (code points), not `for(i…)` (UTF-16 units) — they d
 ## 5. Testing
 
 ```bash
-bun install     # jsdom, for the three DOM suites only
-./run-tests.sh  # builds, then runs everything
+bun install        # jsdom, for the three DOM suites only
+bun tools/test.ts  # builds, then runs everything — no shell dependency
 ```
+
+`tools/test.ts` replaced an earlier `run-tests.sh`. Keep it a pure Bun script —
+no `Bun.$`, no shelling out to anything but the `bun`/`node` binaries themselves —
+so it runs the same on Windows as on Linux/macOS.
 
 **HTMLRewriter is not a DOM.** It's a streaming HTML transformer: element and text
 callbacks, no tree, no event loop, and it never executes `<script>`. It cannot stand in
@@ -145,7 +155,7 @@ evaluates via `vm.runInContext` with a Proxy-based global and Bun rejects that
 (`Proxy is not allowed in the global prototype chain`). happy-dom was evaluated as a
 Bun-native replacement and does not execute inline `<script>` content injected through
 `document.write`, so it can't test this page. If Bun's `vm` gains Proxy-global support,
-move all seven to Bun and delete the split in `run-tests.sh`.
+move all seven to Bun and delete the split in `tools/test.ts`.
 
 | Suite | Covers |
 |---|---|
@@ -174,8 +184,7 @@ Every suite builds its own module from `public/index.html`, so they test **the s
 
 ```bash
 bun run refresh    # downloads the repo zip, regenerates tools/data.js
-bun run build
-./run-tests.sh
+bun run test       # build + full suite
 bun run coverage   # re-measure match rates
 ```
 

@@ -86,7 +86,7 @@ Tooling runs on [Bun](https://bun.sh); the build has no runtime dependencies.
 ```bash
 bun install
 bun run build      # tools/* -> public/index.html
-./run-tests.sh     # 8 suites, ~110 assertions
+bun run test       # builds, then runs all 8 suites — no shell script, works on Windows too
 bun run coverage   # re-measure source match rates
 ```
 
@@ -94,7 +94,25 @@ bun run coverage   # re-measure source match rates
 
 Single file, so either Cloudflare option works. Put `index.html` in a `public/` directory.
 
-`bun run deploy` builds and ships in one step.
+`bun run deploy` runs the full test suite, then ships — it stops before deploying if anything fails.
+
+### Building on Cloudflare
+
+If you connect the repo to Cloudflare instead of deploying from your machine, the
+build settings must be:
+
+| Setting | Value |
+|---|---|
+| Build command | `bun tools/build.ts` |
+| Build output directory | `public` |
+| Root directory | *(leave empty — the repo root)* |
+
+`public/index.html` is generated, so it is not committed. The build needs no
+dependencies; `bun install` only pulls jsdom for the test suite.
+
+If you would rather not build on Cloudflare at all, commit `public/index.html`,
+drop it from `.gitignore`, and leave the build command empty — it is a single
+static file with nothing to compile.
 
 **Workers with static assets** — `wrangler.toml`:
 

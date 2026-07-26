@@ -1,5 +1,15 @@
 /** Shared helpers for the tools. See AGENTS.md. */
-export const root = new URL("../", import.meta.url);
+/** Repo root, found by walking up from this file — independent of the working directory. */
+export const root = await (async () => {
+  let dir = new URL("./", import.meta.url);
+  for (let i = 0; i < 8; i++) {
+    if (await Bun.file(new URL("tools/template.html", dir)).exists()) return dir;
+    const up = new URL("../", dir);
+    if (up.pathname === dir.pathname) break;
+    dir = up;
+  }
+  throw new Error("could not locate the repo root (no tools/template.html found)");
+})();
 
 export const norm = (s: string) => s.toLowerCase().replace(/[^a-z0-9]/g, "");
 export const host = (u: string) =>
