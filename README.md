@@ -47,7 +47,7 @@ Anikku's root message has **no manga fields at all**, so pairs with nothing in c
 
 Note that field 106 is `backupExtensionRepo` in Mihon but `backupExtensions` in Anikku and legacy Aniyomi — same number, different message. The kind guard is what keeps those from ever meeting.
 
-**Mihon family → Kotatsu** — Rebuilds the library as Kotatsu `favourites`, `categories`, `history` and `bookmarks`. Manga IDs use Kotatsu's own hash so entries link up correctly.
+**Mihon family → Kotatsu** — Rebuilds the library as Kotatsu `favourites`, `categories`, `history` and `bookmarks`. Manga IDs use Kotatsu's own hash so entries link up correctly. Category membership is resolved by each category's **list position**, matching how Mihon's own restorer works — not by any id embedded in the source backup.
 
 **Kotatsu → Mihon family** — Rebuilds library, categories and reading position, and adds the Keiyoushi extension repo so extensions install without trust prompts.
 

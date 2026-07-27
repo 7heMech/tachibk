@@ -166,6 +166,7 @@ move all seven to Bun and delete the split in `tools/test.ts`.
 | `uitest` | jsdom DOM wiring, option visibility, mapping table |
 | `e2e` | full click-through: select file → convert → download |
 | `rootcheck` | per-target root filtering for every Mihon-family app |
+| `categories` | category order/id bug regression — see below |
 | `domcheck` | static: markup and script agree on ids, build integrity |
 
 Every suite builds its own module from `public/index.html`, so they test **the shipped artifact** and can run in any order. Don't reintroduce a shared temp module — an earlier version had suites clobbering each other's exports.
@@ -217,7 +218,57 @@ Don't implement these without a reason; each was considered and rejected.
 - **Fuzzy/substring source matching.** Tempting for the 1,289 unmatched, but a wrong source is worse than a skipped one.
 - **Bundling the Keiyoushi index.** 460 KB embedded, stale immediately, and the runtime fetch already degrades gracefully.
 
-## 8. Provenance and licensing
+## 8. Categories link by order, not id — a bug that shipped and got fixed
+
+`BackupManga.categories` (field 17) is `List<Long>`. It is tempting to assume those
+longs are `BackupCategory.id` — they are not. Confirmed straight from Mihon's own
+restorer:
+
+```kotlin
+// CategoriesRestorer.kt — the backup's category id is never used for anything
+val order = nextOrder++
+database.categoriesQueries.insert(it.name, order, it.flags)   // fresh local id assigned here
+    .let { id -> it.toCategory(id).copy(order = order) }
+
+// MangaRestorer.kt — manga are linked by ORDER, not id
+val backupCategoriesByOrder = backupCategories.associateBy { it.order }
+categories.mapNotNull { backupCategoryOrder ->
+    backupCategoriesByOrder[backupCategoryOrder]?.let { ... dbCategoriesByName[it.name] ... }
+}
+```
+
+`id` is written to the backup and then completely ignored on restore. Categories are
+re-created by **name**, given a fresh local id, and manga are re-attached by matching
+field 17 against `order` — the category's position in the backup's own category list.
+
+Both `convertToKotatsu` and `convertFromKotatsu` originally joined on `id`. This is
+invisible on any backup where categories were never reordered, because a freshly
+created, never-reordered list has `id == order` by coincidence — every synthetic test
+fixture up to that point had this property too, so the bug shipped with the test suite
+apparently green. It surfaces the moment a real user drags a category to a new
+position: `id` stays fixed, `order` changes, and every manga in that category gets
+silently reassigned to whichever category the *stale* id now collides with. Reported
+symptom: manga stayed grouped together (they all carried the same, now-wrong,
+identifier) but the whole group showed up under a different, unrelated category name —
+exactly what "join on the wrong key" produces, and indistinguishable from random
+corruption without knowing the mechanism.
+
+Fixed in both directions by using **array position** as the join key — sorted by
+`order`/`sort_key` for a sensible default ordering, but the actual linkage no longer
+depends on the source data's `id` or `sort_key` being unique or gap-free.
+
+**`tests/categories.mjs` exists because of this bug specifically**, and every fixture
+in it is deliberately constructed so `id` and `order` disagree in a way that collides
+with a *different real category* — not just a dangling reference — because a dangling
+reference would have failed loudly (or been silently dropped) rather than reproducing
+the actual reported behavior. Before trusting a new regression test here, revert the
+fix and confirm the test fails for the *right reason* — a first attempt at this test
+used fixtures where `id` and `order` accidentally coincided for the category being
+checked, which meant the test passed against both the buggy and fixed code and proved
+nothing. If you add a category-related fixture anywhere in this repo, default to
+`id != order`; equal values silently return this class of bug to being invisible.
+
+## 9. Provenance and licensing
 
 Format and algorithm knowledge came from `galpt/mk-bkconv` (MIT) and `PhantomShift/nekotatsu` (GPL-3.0); the parser table is extracted from `KotatsuApp/kotatsu-parsers` (Apache-2.0). No code was copied from nekotatsu, but the derivation is real — worth your own look before changing the repo's license. Full credits in `README.md` and on the page itself.
 

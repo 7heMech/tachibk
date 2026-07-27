@@ -22,9 +22,10 @@ function manga(sid,url,title,cats,chs,hist,status,dateAdded){
 }
 const mdId=mihonSourceId('MangaDex','en',1), tnId=mihonSourceId('Toonily','en',1), weirdId=1234567890123n;
 const root=new PW();
-root.msg(1, manga(mdId,'/manga/aaa-bbb','Test Manga A',[1],[chapter('/chapter/1','Ch 1',1,true,false,3),chapter('/chapter/2','Ch 2',2,true,true,7),chapter('/chapter/3','Ch 3',3,false,false,0)],[['/chapter/2',1712000000000n]],1));
+root.msg(1, manga(mdId,'/manga/aaa-bbb','Test Manga A',[0],[chapter('/chapter/1','Ch 1',1,true,false,3),chapter('/chapter/2','Ch 2',2,true,true,7),chapter('/chapter/3','Ch 3',3,false,false,0)],[['/chapter/2',1712000000000n]],1));
 root.msg(1, manga(tnId,'/webtoon/xyz/','Test Manga B',[],[chapter('/webtoon/xyz/ch-1','Ch 1',1,false,false,0)],[],2));
-root.msg(1, manga(weirdId,'/nope','Unmappable Manga',[1],[],[],1));
+root.msg(1, manga(weirdId,'/nope','Unmappable Manga',[0],[],[],1));
+// order=0, id=1 (deliberately different) — field 17 above references order, not id.
 const c1=new PW(); c1.str(1,'Reading').vint(2,0).vint(3,1); root.msg(2,c1.done());
 for(const [id,name] of [[mdId,'MangaDex'],[tnId,'Toonily'],[weirdId,'Totally Fake Source']]){const s=new PW();s.str(1,name).vint(2,id);root.msg(101,s.done());}
 const pref=new PW(); pref.str(1,'some_pref'); root.msg(104,pref.done());
@@ -95,7 +96,11 @@ ok(fav[0].manga.public_url==='https://mangadex.org/manga/aaa-bbb','public_url bu
 ok(String(fav[0].manga_id)===M.kotatsuId('MANGADEX','/manga/aaa-bbb').toString(),'manga_id uses Kotatsu hash');
 ok(!/^-?\d{16,}$/.test(JSON.stringify(fav[0].manga_id))||true,'id serialised exactly');
 ok(cat[0].title==='Library'&&String(cat[0].category_id)==='2','default Library category');
-ok(cat.some(c=>c.title==='Reading'&&String(c.category_id)==='4'),'user category offset by 3');
+const readingCat=cat.find(c=>c.title==='Reading');
+ok(!!readingCat,'user category present: '+cat.map(c=>c.title).join(','));
+const readingId=readingCat&&String(readingCat.category_id);
+const inReading=fav.filter(f=>String(f.category_id)===readingId).map(f=>f.manga.title);
+ok(inReading.includes('Test Manga A'),'Test Manga A actually lands in Reading (by order, not id): '+inReading.join(','));
 ok(!!bmk,'bookmarks section written');
 ok(fav.every(f=>f.manga.source!=='UNKNOWN'),'no UNKNOWN sources emitted');
 const rawFav=TD.decode(z.find(e=>e.name==='favourites').data);

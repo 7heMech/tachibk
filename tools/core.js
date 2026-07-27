@@ -507,10 +507,19 @@ async function convertToKotatsu(buf, opts, log) {
     category_id: CAT_DEFAULT, created_at: 0, sort_key: 0, title: opts.libraryName || 'Library',
     order: 'ALPHABETIC', track: true, show_in_lib: true, deleted_at: 0,
   }];
+  /* Mihon's own restorer matches BackupManga.categories against BackupCategory.order,
+     never .id — id is discarded on restore (categories are matched by name and given a
+     fresh local id). So the join key here must be `order`, not `id`. Assign the Kotatsu
+     category_id from array position (not from `order`'s numeric value) so it stays
+     collision-free even if the source data has duplicate or non-sequential order values. */
+  const orderToCatId = new Map();
   for (const c of bk.categories) {
+    const ord = BigInt(c.order || 0);
+    if (orderToCatId.has(ord)) continue; // duplicate order value in source data — keep the first
+    const catId = CAT_OFFSET + BigInt(orderToCatId.size);
+    orderToCatId.set(ord, catId);
     categories.push({
-      category_id: (c.id !== undefined ? c.id : BigInt(c.order || 0)) + CAT_OFFSET,
-      created_at: 0, sort_key: c.order || 0, title: c.name || 'Category',
+      category_id: catId, created_at: 0, sort_key: c.order || 0, title: c.name || 'Category',
       order: 'NEWEST', track: null, show_in_lib: true, deleted_at: 0,
     });
   }
@@ -543,7 +552,7 @@ async function convertToKotatsu(buf, opts, log) {
       author: m.author || m.artist || '', source: parser, tags: [],
     };
 
-    const cats = m.categories.length ? m.categories.map(c => BigInt(c) + CAT_OFFSET) : [];
+    const cats = m.categories.map(o => orderToCatId.get(BigInt(o))).filter(cid => cid !== undefined);
     for (const cid of [...cats, CAT_DEFAULT]) {
       favourites.push({ manga_id: id, category_id: cid, sort_key: 0, created_at: m.dateAdded || 0n, deleted_at: 0, manga: kmanga });
     }
@@ -642,6 +651,18 @@ async function convertFromKotatsu(buf, opts, log) {
   for (const h of histories) { const e = take(h.manga || {}); const t = bigOf(h.updated_at); if (t > e.lastRead) e.lastRead = t; if (!e.dateAdded && h.created_at) e.dateAdded = bigOf(h.created_at); }
 
   const targetRootPre = new Set(APPS[opts.to] ? APPS[opts.to].root || [] : [1, 2, 101, 104, 105, 106]);
+  const emitCats = targetRootPre.has(2), emitSources = targetRootPre.has(101);
+  /* Mihon's restorer matches BackupManga.categories (field 17) against BackupCategory.order
+     (list position) and discards the backup's category id entirely — see CategoriesRestorer.kt.
+     So field 17 must hold each category's assigned order, not its Kotatsu category_id. Sort by
+     Kotatsu's sort_key for a sensible default order, then assign order = array index — that's
+     guaranteed unique even if sort_key has gaps or duplicates in the source data, which a raw
+     copy of sort_key would not be. This map must exist before the manga loop below, since each
+     manga's field 17 is written from it. */
+  const sortedCats = [...(emitCats ? cats : [])].sort((a, b) => Number(bigOf(a.sort_key) - bigOf(b.sort_key)));
+  const catIdToOrder = new Map();
+  sortedCats.forEach((c, i) => catIdToOrder.set(String(bigOf(c.category_id)), i));
+
   const root = new PW(); let kept = 0, dropped = 0, weak = 0;
   const usedSources = new Map();
   for (const { km, cats: mcats, lastRead, dateAdded } of byManga.values()) {
@@ -657,17 +678,19 @@ async function convertFromKotatsu(buf, opts, log) {
     if (km.author) m.str(5, km.author);
     if (km.cover_url) m.str(9, km.cover_url);
     m.vint(13, dateAdded || 0n);
-    for (const c of mcats) m.vint(17, c);
+    for (const cid of mcats) {
+      const ord = catIdToOrder.get(String(cid));
+      if (ord !== undefined) m.vint(17, ord);
+    }
     m.bool(100, true);
     m.vint(106, lastRead || dateAdded || 0n);
     m.vint(109, 1);
     root.msg(1, m.done());
     kept++;
   }
-  const emitCats = targetRootPre.has(2), emitSources = targetRootPre.has(101);
-  for (const c of (emitCats ? cats : [])) {
+  for (const c of sortedCats) {
     const cm = new PW();
-    cm.str(1, c.title || 'Category').vint(2, bigOf(c.sort_key)).vint(3, bigOf(c.category_id)).vint(100, 0);
+    cm.str(1, c.title || 'Category').vint(2, catIdToOrder.get(String(bigOf(c.category_id)))).vint(3, bigOf(c.category_id)).vint(100, 0);
     root.msg(2, cm.done());
   }
   for (const [id, name] of (emitSources ? usedSources : [])) {

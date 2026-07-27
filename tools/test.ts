@@ -32,6 +32,7 @@ const suites: Suite[] = [
   { name: "test2", runner: "bun", file: "test2.mjs" },
   { name: "test3", runner: "bun", file: "test3.mjs" },
   { name: "rootcheck", runner: "bun", file: "rootcheck.mjs" },
+  { name: "categories", runner: "bun", file: "categories.mjs" },
   { name: "domcheck", runner: "bun", file: "domcheck.ts" },
   { name: "guard", runner: "node", file: "guard.mjs" },
   { name: "uitest", runner: "node", file: "uitest.mjs" },
