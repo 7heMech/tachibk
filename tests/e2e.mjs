@@ -24,8 +24,13 @@ Object.defineProperty($('file-input'), 'files', { value: [file], configurable: t
 $('file-input').dispatchEvent(new window.Event('change'));
 
 ok($('file-info').classList.contains('visible'), 'file info shown');
-ok($('output-name').value === 'my_library_2026-07-26_kotatsu.zip', 'output name suggested: '+$('output-name').value);
+ok($('output-name').value === 'my_library_2026-07-26_anikku.tachibk', 'output name suggested for default route: '+$('output-name').value);
 ok(!$('btn-convert').disabled, 'convert enabled');
+
+// switch to the kotatsu route for the main flow
+$('from-app').value='mihon'; $('from-app').dispatchEvent(new window.Event('change'));
+$('to-app').value='kotatsu'; $('to-app').dispatchEvent(new window.Event('change'));
+ok($('output-name').value === 'my_library_2026-07-26_kotatsu.zip', 'output name follows route change: '+$('output-name').value);
 
 $('opt-keiyoushi').checked = false;
 $('btn-convert').dispatchEvent(new window.Event('click'));

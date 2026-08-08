@@ -569,7 +569,7 @@
 <div class="container">
   <header>
     <div class="badge">Backup Converter</div>
-    <h1><span id="title-from">Mihon</span><span class="arrow">→</span><span id="title-to">Kotatsu</span></h1>
+    <h1><span id="title-from">Aniyomi</span><span class="arrow">→</span><span id="title-to">Anikku</span></h1>
     <p class="subtitle">
       Move your library between manga and anime readers.<br>
       Everything runs in your browser — your backup is never uploaded.
@@ -592,8 +592,8 @@
     <div class="field-group hidden" id="kind-group" style="margin-bottom:10px">
       <label class="field-label">Library type</label>
       <div class="seg" id="kind-seg">
-        <button type="button" data-kind="manga" class="on">Manga</button>
-        <button type="button" data-kind="anime">Anime</button>
+        <button type="button" data-kind="manga">Manga</button>
+        <button type="button" data-kind="anime" class="on">Anime</button>
       </div>
     </div>
 
@@ -739,7 +739,7 @@
     ['fr', 'Français'], ['de', 'Deutsch'], ['it', 'Italiano'], ['ru', 'Русский'], ['id', 'Indonesia'],
     ['tr', 'Türkçe'], ['ar', 'العربية'], ['ja', '日本語'], ['ko', '한국어'], ['zh-Hans', '简体中文'], ['vi', 'Tiếng Việt'], ['th', 'ไทย']];
 
-  let kind = 'manga', selectedFile = null, outputBlob = null, busy = false;
+  let kind = 'anime', selectedFile = null, outputBlob = null, busy = false;
 
   function fillSelect(sel, chosen) {
     sel.innerHTML = '';
@@ -754,8 +754,8 @@
       sel.appendChild(g);
     }
   }
-  fillSelect(els.from, 'mihon');
-  fillSelect(els.to, 'kotatsu');
+  fillSelect(els.from, 'aniyomi');
+  fillSelect(els.to, 'anikku');
   for (const [v, l] of LANGS) { const o = document.createElement('option'); o.value = v; o.textContent = l; els.optLang.appendChild(o); }
   const pc = document.getElementById('parser-count');
   if (pc) pc.textContent = KOTATSU_PARSERS.size.toLocaleString();

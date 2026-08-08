@@ -13,13 +13,20 @@ const $ = id => d.getElementById(id);
 ok(errs.length===0, 'no runtime errors on load' + (errs.length?': '+errs.join('; '):''));
 ok($('from-app').options.length===10 && $('to-app').options.length===10, 'both selects populated with 10 apps');
 ok([...$('from-app').querySelectorAll('optgroup')].length===3, '3 optgroups');
-ok($('title-from').textContent==='Mihon' && $('title-to').textContent==='Kotatsu', 'default route Mihon -> Kotatsu');
+ok($('title-from').textContent==='Aniyomi' && $('title-to').textContent==='Anikku', 'default route Aniyomi -> Anikku');
 ok($('mapping-grid').children.length>0, 'mapping rows rendered: '+$('mapping-grid').children.length);
 ok($('route-note').textContent.length>60, 'route note rendered');
 ok($('parser-count').textContent==='1,256', 'parser count shown: '+$('parser-count').textContent);
+ok($('opt-row-libname').classList.contains('hidden') && $('opt-row-lang').classList.contains('hidden'), 'kotatsu-only options hidden for aniyomi->anikku');
+ok($('btn-convert').disabled, 'convert disabled with no file');
+ok($('kind-group').classList.contains('hidden'), 'anime toggle hidden (anikku is anime-only)');
+
+// legacy kotatsu route
+$('from-app').value='mihon'; $('from-app').dispatchEvent(new window.Event('change'));
+$('to-app').value='kotatsu'; $('to-app').dispatchEvent(new window.Event('change'));
+ok($('title-from').textContent==='Mihon' && $('title-to').textContent==='Kotatsu', 'route change Mihon -> Kotatsu');
 ok(!$('opt-row-libname').classList.contains('hidden'), 'library-name option visible for ->kotatsu');
 ok($('opt-row-lang').classList.contains('hidden'), 'language option hidden for ->kotatsu');
-ok($('btn-convert').disabled, 'convert disabled with no file');
 ok($('kind-group').classList.contains('hidden'), 'anime toggle hidden (kotatsu has no anime)');
 
 // swap
