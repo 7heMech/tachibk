@@ -1011,7 +1011,11 @@
       els.mapGrid.appendChild(row);
     }
 
-    els.merge.disabled = busy || !ready.length || els.mergeNote.classList.contains('bad');
+    /* Files are inspected one at a time, so the first one reaching 'ok' would
+       otherwise enable the button while later ones are still parsing — and the click
+       handler only merges what is ready, silently omitting the rest. */
+    const reading = mergeFiles.some(f => f.state === 'reading');
+    els.merge.disabled = busy || reading || !ready.length || els.mergeNote.classList.contains('bad');
     if (ready.length) els.outputName.value = `merged_library_${t}${app.ext}`;
   }
 
@@ -1085,20 +1089,14 @@
     els.fileName.textContent = file.name;
     els.fileSize.textContent = fmtBytes(file.size);
     els.fileInfo.classList.add('visible');
-    outputBlob = null;
-    els.download.classList.remove('visible');
-    els.logWrap.classList.remove('visible');
-    els.logBox.innerHTML = '';
+    resetOutput();
     refresh();
   }
   function clearFile() {
     selectedFile = null;
     els.fileInfo.classList.remove('visible');
-    outputBlob = null;
-    els.download.classList.remove('visible');
-    els.logWrap.classList.remove('visible');
-    els.logBox.innerHTML = '';
     els.fileInput.value = '';
+    resetOutput();
     refresh();
   }
 
@@ -1110,7 +1108,7 @@
     refresh();
   });
 
-  els.mergeTo.addEventListener('change', refresh);
+  els.mergeTo.addEventListener('change', () => { resetOutput(); refresh(); });
   els.mergeDrop.addEventListener('click', () => els.mergeInput.click());
   els.mergeDrop.addEventListener('keydown', e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); els.mergeInput.click(); } });
   els.mergeDrop.addEventListener('dragover', e => { e.preventDefault(); els.mergeDrop.classList.add('drag-over'); });
@@ -1167,10 +1165,18 @@
     refresh();
   });
 
-  els.from.addEventListener('change', refresh);
-  els.to.addEventListener('change', refresh);
-  els.swap.addEventListener('click', () => { const a = els.from.value; els.from.value = els.to.value; els.to.value = a; refresh(); });
-  els.kindSeg.addEventListener('click', e => { const b = e.target.closest('button'); if (b) { kind = b.dataset.kind; refresh(); } });
+  /* Any route change invalidates an already-produced file: suggestName() rewrites the
+     filename to the new target while outputBlob still holds the old conversion. */
+  els.from.addEventListener('change', () => { resetOutput(); refresh(); });
+  els.to.addEventListener('change', () => { resetOutput(); refresh(); });
+  els.swap.addEventListener('click', () => {
+    const a = els.from.value; els.from.value = els.to.value; els.to.value = a;
+    resetOutput(); refresh();
+  });
+  els.kindSeg.addEventListener('click', e => {
+    const b = e.target.closest('button');
+    if (b) { kind = b.dataset.kind; resetOutput(); refresh(); }
+  });
 
   els.dropzone.addEventListener('click', () => els.fileInput.click());
   els.dropzone.addEventListener('keydown', e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); els.fileInput.click(); } });

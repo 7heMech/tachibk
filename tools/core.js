@@ -338,15 +338,15 @@ function decodeChapter(b, isEpisode) {
   }
   return c;
 }
-function encodeChapter(c, isEpisode) {
+function encodeChapter(c, isEpisode, dropHigh) {
   const w = new PW();
   w.str(1, c.url).str(2, c.name).str(3, c.scanlator)
    .bool(4, c.read).bool(5, c.bookmark).vint(6, c.lastPageRead)
    .vint(7, c.dateFetch).vint(8, c.dateUpload);
   if (c.chapterNumber !== undefined) w.f32(9, c.chapterNumber);
   w.vint(10, c.sourceOrder).vint(11, c.lastModifiedAt).vint(12, c.version);
-  if (isEpisode) { w.vint(16, c.totalSeconds); w.bool(501, c.fillermark); }
-  const r = rawBytes(c);
+  if (isEpisode) { w.vint(16, c.totalSeconds); if (!dropHigh) w.bool(501, c.fillermark); }
+  const r = rawBytes(c, dropHigh ? 500 : undefined);
   if (r) w.raw(r);
   return w.done();
 }
@@ -396,7 +396,7 @@ function encodeManga(m, isAnime, dropHigh) {
    .str(5, m.author).str(6, m.description);
   for (const g of m.genre) w.str(7, g);
   w.vint(8, m.status).str(9, m.thumbnailUrl).vint(13, m.dateAdded);
-  for (const c of m.chapters) w.msg(16, encodeChapter(c, isAnime));
+  for (const c of m.chapters) w.msg(16, encodeChapter(c, isAnime, dropHigh));
   for (const c of m.categories) w.vint(17, c);
   w.bool(100, m.favorite);
   for (const h of m.history) {
@@ -1225,15 +1225,16 @@ function buildMergedTachi(merged, target, opts, log) {
   if (wantAnime && merged.anime.length) {
     const L = ANIME_LAYOUT[layout];
     const catOrder = new Map(merged.animeCategories.map((c, i) => [c.name, i]));
-    const dropHigh = layout === 'low';
-    let seasonsLost = 0;
+    /* ANIME_LAYOUT describes *root* numbering only. Anikku's nested BackupManga and
+       BackupChapter declare 500 and 502–507 exactly as Aniyomi's BackupAnime and
+       BackupEpisode do — backgroundUrl, season linkage, fillermark, summary,
+       previewUrl — so nothing ≥500 is stripped on the way into the low layout.
+       (convertTachiAnime does strip them, and is wrong to; see AGENTS.md §2.) */
     for (const a of merged.anime) {
       a.categories = [...a._cats].map(n => catOrder.get(n)).filter(o => o !== undefined).sort((x, y) => x - y);
-      if (dropHigh && (a.seasonId !== undefined || rawDropped(a, 500).length)) seasonsLost++;
-      root.msg(L.anime, encodeManga(a, true, dropHigh));
+      root.msg(L.anime, encodeManga(a, true, false));
     }
     log(`wrote ${merged.anime.length} anime in the ${layout === 'x5' ? '501–506' : '3/4/103'} layout`, 'success');
-    if (seasonsLost) log(`${seasonsLost} anime lost season links and other fields ≥500 — ${app.label}'s layout has no room for them`, 'warn');
     for (const c of merged.animeCategories) root.msg(L.cats, encodeCategory(c));
     for (const [id, name] of merged.animeSources) root.msg(L.sources, encodeSource({ name, sourceId: BigInt(id) }));
   }

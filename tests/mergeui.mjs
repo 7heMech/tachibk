@@ -94,6 +94,24 @@ ok(!$('btn-merge').disabled, 'merge enabled once files parse');
 ok(/1 manga and 1 anime/.test($('merge-note').textContent), 'summary counts both kinds: ' + $('merge-note').textContent.trim());
 ok($('output-name').value === 'merged_library_aniyomi.tachibk', 'output name suggested: ' + $('output-name').value);
 
+/* Adding a further file must not leave the button live while it is still parsing.
+   addMergeFiles inspects one file at a time, so between file N finishing and file
+   N+1 finishing there is a moment with ready.length > 0 and a file still reading —
+   and the click handler only merges what is ready. Checked synchronously, right
+   after the change event, so the window is hit deterministically rather than raced. */
+{
+  const extra = mkFile(await F.gzip(mihonBackup('/manga/z', 'Late Arrival', 'Reading')), 'laptop.tachibk');
+  Object.defineProperty($('merge-file-input'), 'files', { value: [extra], configurable: true });
+  click($('merge-file-input'), 'change');
+  ok($('merge-list').children.length === 3, 'the new file appears immediately');
+  ok(/reading/.test(rowText(2)), 'and is shown as still being read: ' + rowText(2).trim());
+  ok($('btn-merge').disabled, 'merge is disabled while any input is still parsing, even though others are ready');
+  await tick(150);
+  ok(!$('btn-merge').disabled, 'and comes back once it finishes');
+  click($('merge-list').children[2].querySelector('[data-act=rm]'));
+  ok($('merge-list').children.length === 2, 'removed again for the rest of the run');
+}
+
 /* ---- 4. a target that cannot hold everything says so ---- */
 $('merge-to').value = 'mihon'; click($('merge-to'), 'change');
 ok(/1 anime will be dropped/.test($('merge-note').textContent), 'dropping anime is called out for Mihon: ' + $('merge-note').textContent.trim());
@@ -128,6 +146,18 @@ click($('btn-merge'));
 await tick(2500);
 ok($('log-status').textContent === 'Done', 'a second merge without reloading also succeeds');
 ok(/manga: 1 in, 1 out/.test($('log-box').textContent), 'and reports the same counts, not a library folded into itself');
+
+/* Changing the target invalidates what was just produced: refreshMerge rewrites the
+   filename to the new target, so leaving the old blob downloadable hands the user an
+   Aniyomi protobuf named .zip. */
+{
+  ok($('btn-download').classList.contains('visible'), 'download is visible after the merge');
+  $('merge-to').value = 'kotatsu'; click($('merge-to'), 'change');
+  ok($('output-name').value === 'merged_library_kotatsu.zip', 'the filename follows the new target: ' + $('output-name').value);
+  ok(!$('btn-download').classList.contains('visible'), 'and the stale download is withdrawn rather than renamed');
+  ok(!$('log-wrapper').classList.contains('visible'), 'the log for the superseded run is cleared too');
+  $('merge-to').value = 'aniyomi'; click($('merge-to'), 'change');
+}
 
 /* ---- 7. removing files, and going back to convert ---- */
 click($('merge-list').children[0].querySelector('[data-act=rm]'));

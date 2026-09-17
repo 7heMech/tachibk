@@ -99,9 +99,62 @@ const tn = mihonSourceId('Toonily', 'en', 1);
   ok(dec.seasonParentId === 11n && dec.seasonId === 12n, 'anime season parentId/id decoded');
   ok(dec.chapters[0].totalSeconds === 1440n && dec.chapters[0].fillermark === true, 'episode totalSeconds + fillermark decoded');
   ok(same(norm(bytes, 1), norm(M.encodeManga(dec, true), 1)), 'BackupAnime survives decode -> encode, seasons included');
-  const low = M.encodeManga(M.decodeManga(bytes, true), true, true);
-  const highs = [...M.pbFields(low)].map(x => x.f).filter(f => f >= 500);
-  ok(highs.length === 0, 'writing the Anikku layout strips fields >= 500: left ' + highs.join(','));
+  const stripped = M.encodeManga(M.decodeManga(bytes, true), true, true);
+  const highs = [...M.pbFields(stripped)].map(x => x.f).filter(f => f >= 500);
+  ok(highs.length === 0, 'encodeManga can strip fields >= 500 on request: left ' + highs.join(','));
+  const epHigh = [...M.pbFields([...M.pbFields(stripped)].find(x => x.f === 16).val)].map(x => x.f).filter(f => f >= 500);
+  ok(epHigh.length === 0, 'and the strip recurses into episodes, as stripHighFields does: left ' + epHigh.join(','));
+}
+
+/* Nested >= 500 stripping, on the two cases that differ.
+ *
+ * Into a manga-only target it must happen: Mihon's BackupChapter stops at 13, so a
+ * fork field nested inside a chapter has nowhere to land.
+ *
+ * Into Anikku it must NOT happen, which is where the layout tables mislead. ANIME_LAYOUT
+ * describes root numbering only; Anikku's own BackupManga declares 500 and 502-507 and
+ * its BackupChapter declares 501 fillermark, 502 summary and 503 previewUrl, exactly as
+ * Aniyomi does. Stripping there would throw away season links and fillermarks the target
+ * fully supports.
+ */
+{
+  const forkChapter = new PW();
+  forkChapter.str(1, '/c/1').str(2, 'Ch 1').f32(9, 1).str(540, 'fork chapter extra');
+  const forkManga = new PW();
+  forkManga.vint(1, md).str(2, '/manga/fork').str(3, 'Fork Series').bool(100, true)
+    .msg(16, forkChapter.done()).str(530, 'fork manga extra');
+  const animeSrc = new PW();
+  animeSrc.msg(501, forkManga.done());   // an Aniyomi-layout file carrying manga too
+  const r = new PW();
+  r.msg(1, forkManga.done());
+  r.vint(500, 0);
+  const anime = new PW();
+  const ep = new PW(); ep.str(1, '/e/1').str(2, 'Ep 1').bool(501, true).str(502, 'ep summary');
+  anime.vint(1, 42n).str(2, '/anime/s2').str(3, 'Season 2').bool(100, true)
+    .msg(16, ep.done()).str(500, 'https://cdn/bg.jpg').vint(503, 8n).f32(505, 2);
+  r.msg(501, anime.done());
+  const src2 = new PW(); src2.str(1, 'AnimeSrc').vint(2, 42n); r.msg(503, src2.done());
+
+  const inp = await M.inspectBackup(await M.gzip(r.done()), 'aniyomi.tachibk');
+  const nested = (bk, field) => {
+    const e = [...M.pbFields(bk)].find(x => x.f === field);
+    const top = [...M.pbFields(e.val)].map(x => x.f).filter(f => f >= 500);
+    const ch = [...M.pbFields(e.val)].filter(x => x.f === 16)
+      .flatMap(x => [...M.pbFields(x.val)].map(y => y.f)).filter(f => f >= 500);
+    return { top, ch };
+  };
+
+  const toMihon = await M.gunzip(await M.runMerge([inp], 'mihon', {}, log));
+  const mihon = nested(toMihon, 1);
+  ok(mihon.top.length === 0, 'manga into Mihon: fork fields >= 500 stripped from the manga: left ' + mihon.top.join(','));
+  ok(mihon.ch.length === 0, 'manga into Mihon: and from its chapters too: left ' + mihon.ch.join(','));
+
+  const toAnikku = await M.gunzip(await M.runMerge([inp], 'anikku', {}, log));
+  const anikku = nested(toAnikku, 3);
+  ok(anikku.top.includes(500) && anikku.top.includes(503),
+    'anime into Anikku: backgroundUrl and season id kept \u2014 Anikku declares them: ' + anikku.top.join(','));
+  ok(anikku.ch.includes(501) && anikku.ch.includes(502),
+    'anime into Anikku: episode fillermark and summary kept: ' + anikku.ch.join(','));
 }
 
 /* ===========================================================================

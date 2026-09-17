@@ -130,10 +130,33 @@ in the UI.
 506 seasonSourceOrder   507 fetchType
 ```
 
-502 and 503 are **season linkage** — `id` associates a season with its `parentId`. So
-`stripHighFields(val, 500)` on an Aniyomi → Anikku conversion destroys the season
-hierarchy, and 503 being a device-local row id is why the merge engine renumbers them
-(§10). Both paths now say so in the log rather than dropping it quietly.
+502 and 503 are **season linkage** — `id` associates a season with its `parentId` — and
+503 being a device-local row id is why the merge engine renumbers them (§10).
+
+### `ANIME_LAYOUT` is about root numbering only — and `convertTachiAnime` forgets that
+
+The nested messages are *not* renumbered between the two layouts, and Anikku's are not
+smaller than Aniyomi's. Read from `komikku-app/anikku@master`, Anikku's `BackupManga`
+(its anime model) declares `500 backgroundUrl`, `502 parentId`, `503 id`, `504 seasonFlags`,
+`505 seasonNumber`, `506 seasonSourceOrder`, `507 fetchType` — identical to Aniyomi's
+`BackupAnime` — plus `600`, `602`, `603` and `800–805` of its own. Its `BackupChapter`
+declares `501 fillermark`, `502 summary`, `503 previewUrl`, identical to Aniyomi's
+`BackupEpisode`.
+
+So **`convertTachiAnime`'s `stripHighFields(val, 500)` is wrong**. On the tool's own
+default route — Aniyomi → Anikku — it deletes season hierarchies, background art,
+fillermarks, episode summaries and preview urls that Anikku fully supports, and it
+recurses into field 16 so the episode-level ones go too. This is a real, shipping data
+loss, it predates the merge engine, and it is **not fixed here**: changing it is a
+behaviour change to the conversion route with its own test surface, and this was found
+while building something else. Fix it on its own branch, with `guard.mjs` updated to
+assert the fields survive.
+
+The merge engine deliberately does *not* copy that behaviour: `buildMergedTachi` passes
+`dropHigh = false` for anime at both layouts. Nested ≥500 stripping there is reserved for
+manga going into a manga-only target, where Mihon's `BackupChapter` genuinely stops at 13.
+`tests/merge.mjs` pins both halves, and the asymmetry is the point — do not "make them
+consistent" without reading the two `Backup*.kt` files first.
 
 ## 3. How source matching works
 
