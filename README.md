@@ -1,6 +1,6 @@
 # tachibk converter
 
-Convert manga and anime backups between the Mihon, Aniyomi and Kotatsu families of Android readers — entirely in the browser.
+Convert manga and anime backups between the Mihon, Aniyomi and Kotatsu families of Android readers, or merge backups from several devices into one — entirely in the browser.
 
 Live at **<https://tachibk.7he.dev>**
 
@@ -17,6 +17,43 @@ The whole tool is one static `index.html`. No build step, no dependencies, no se
 | Kotatsu | Kotatsu, Usagi | ZIP of JSON |
 
 Usagi is a Kotatsu fork, so it shares Kotatsu's format — those two convert by straight passthrough.
+
+## Merging backups from several devices
+
+The **Merge several** tab takes any number of backups — a phone, a tablet, an old
+device, in any mix of formats — and writes a single file for whichever app you pick.
+Each file is identified from its own bytes, so there is nothing to select per input.
+
+Because Aniyomi and Animetail store both kinds, merging a Mihon backup with an Anikku
+one produces a single hybrid file with the manga at fields 1/2/101 and the anime at
+501–506. A manga-only target drops the anime and says so in the log, and vice versa.
+
+The file list is ordered, and **the first file wins any metadata conflict** — use the
+▲/▼ buttons to say which device you trust. Everything that can be combined is
+combined instead, in both directions:
+
+| | Rule |
+|---|---|
+| Read / seen state | read on **any** device counts as read |
+| Reading position | the furthest of the two |
+| Bookmarks, fillermarks | kept if set anywhere |
+| Chapters / episodes | unioned; ones only one device knew about are carried over |
+| Categories | unioned by name, reindexed from 0 |
+| Category membership | union across devices |
+| `dateAdded` | earliest |
+| Read duration | summed |
+
+Source ids are normalised first. TachiyomiSY keeps E-Hentai and ExHentai on its own internal ids (6901/6902) while Komikku uses the extension's per-language ids, so without this a merge of the two produced two copies of every gallery. The output carries whichever id the target app can actually resolve.
+
+Entries are matched on source + url, falling back to a normalised url, and — only for
+Kotatsu entries, whose Mihon source id has to be derived rather than read — to a title
+match *within the same source*. Cross-format merges are best-effort for that reason and
+the log says so.
+
+Not carried through a merge: extension repo lists (field 106 means a different message in
+each fork), saved searches and feeds. App settings come from the first file that has them,
+since key/value blobs have no sensible merge. Kotatsu-only merges skip the shared model
+entirely so tags, ratings and nsfw flags survive.
 
 ## Routes
 
@@ -42,6 +79,8 @@ Chapters, read state and history survive intact. Converting away from an Aniyomi
 | `backupAnimeExtensionRepo` | 505 | 107 |
 | `backupExtensions` | 504 | 106 |
 | `backupCustomButton` | 506 | 109 |
+
+Only the **root** numbering changes. The nested `BackupAnime`/`BackupEpisode` messages are identical across all three forks, including every field ≥500 — season linkage (502/503), background art (500), fillermarks, episode summaries and preview urls — so those are carried across untouched.
 
 Anikku's root message has **no manga fields at all**, so pairs with nothing in common — Anikku → Mihon, say — are refused with an explanation rather than silently producing an empty backup. To split an Aniyomi or Animetail library across both apps, convert from that original backup twice: once as Manga, once as Anime.
 
@@ -76,6 +115,8 @@ The one optional network request is the public [Keiyoushi extension index](https
 - **Tracking (MyAnimeList, AniList, …) and source preferences are not carried** across ecosystems. They're preserved on Mihon ↔ Mihon routes.
 - **Same-site sources can still differ in URL shape.** `nekotatsu` maintains per-parser correction scripts for this; this tool doesn't, so a minority of entries may need manual migration in-app.
 - The anime route only knows the two field layouts documented above.
+- **Merging rebuilds entries rather than copying bytes.** Everything Mihon and Aniyomi declare today is preserved, including tracking links, notes and excluded scanlators, and unrecognised fork fields ride along untouched — but a merge is the one path where a field the tool has never seen could in principle be reordered. Conversions remain byte-for-byte filters.
+- **Season links survive a merge but not a trip to Anikku.** Aniyomi's season fields live at 502/503, above the cut-off Anikku's layout allows.
 
 ## Development
 
@@ -86,7 +127,7 @@ Tooling runs on [Bun](https://bun.sh); the build has no runtime dependencies.
 ```bash
 bun install
 bun run build      # tools/* -> public/index.html
-bun run test       # builds, then runs all 8 suites — no shell script, works on Windows too
+bun run test       # builds, then runs all 11 suites — no shell script, works on Windows too
 bun run coverage   # re-measure source match rates
 ```
 

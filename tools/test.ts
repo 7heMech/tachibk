@@ -33,10 +33,12 @@ const suites: Suite[] = [
   { name: "test3", runner: "bun", file: "test3.mjs" },
   { name: "rootcheck", runner: "bun", file: "rootcheck.mjs" },
   { name: "categories", runner: "bun", file: "categories.mjs" },
+  { name: "merge", runner: "bun", file: "merge.mjs" },
   { name: "domcheck", runner: "bun", file: "domcheck.ts" },
   { name: "guard", runner: "node", file: "guard.mjs" },
   { name: "uitest", runner: "node", file: "uitest.mjs" },
   { name: "e2e", runner: "node", file: "e2e.mjs" },
+  { name: "mergeui", runner: "node", file: "mergeui.mjs" },
 ];
 
 let anyFail = false;

@@ -1,7 +1,7 @@
 import fs from 'fs';
 const ROOT = new URL('../', import.meta.url).pathname;
 const src = fs.readFileSync(ROOT+'tools/data.js','utf8') + fs.readFileSync(ROOT+'tools/core.js','utf8')
-  + "\nexport {mihonSourceId,kotatsuId,md5,zipRead,zipWrite,jsonDump,jsonParseBig,runConversion,PW,decodeBackup,KOTATSU_PARSERS,gzip,gunzip,crc32};";
+  + "\nexport {mihonSourceId,kotatsuId,md5,zipRead,zipWrite,jsonDump,jsonParseBig,runConversion,PW,decodeBackup,KOTATSU_PARSERS,gzip,gunzip,crc32,pbFields};";
 fs.writeFileSync('/tmp/mod.mjs', src);
 const M = await import('/tmp/mod.mjs');
 
