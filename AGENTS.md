@@ -221,6 +221,41 @@ Against 2,018 Keiyoushi sources and 1,256 Kotatsu parsers:
 
 That last row is an ecosystem fact, not a defect. Don't "fix" it by loosening the matcher — false matches are worse than skips. Regenerate the coverage numbers with `tools/coverage.py` after any table refresh and update the README if they move.
 
+### The same source under several ids
+
+Matching Mihon ↔ Kotatsu is the hard direction, but ids are not even stable *within*
+the Mihon family. TachiyomiSY keeps E-Hentai and ExHentai on its own internal ids —
+`LEWD_SOURCE_SERIES + 1/+2`, i.e. **6901** and **6902** — while Komikku moved them onto
+the ids of the `all.ehentai` extension, one per language, and registers its built-in
+`EHentai` source under every one of them (`AndroidSourceManager`). Both are reading the
+same site; nothing in the backup says so.
+
+Reported from real use: merging an SY backup with a Komikku one produced **two of every
+E-Hentai gallery**, because `(source, url)` matched on url and differed on source. The
+merge engine now collapses these through `SOURCE_EQUIV`/`canonicaliseSources()` before
+anything is keyed, and `sourceIdFor()` writes the id the *target* can resolve — 6901/6902
+for a TachiyomiSY target, the extension id for everyone else. Komikku rewrites 6901/6902
+on restore itself (`EXHMigrations.kt`), so either would work there; SY is the one that
+genuinely needs its own value.
+
+What does **not** need an alias, checked in both projects' `SourceIds.kt`: Pururin,
+Tsumino, 8Muses and HBrowse already agree. What does: the three pre-migration Tachiyomi
+ids Komikku still rewrites — 6907 nHentai, 6909 Tsumino, 6912 HBrowse — which only old
+backups carry.
+
+The per-language ids are **computed**, not copied: 35 of the 36 entries in Komikku's two
+tables are exactly `mihonSourceId(name, lang, 1)`. The 36th, `7151438547982231541`, is
+listed under **both** E-Hentai and ExHentai for `pt-BR` and equals neither computed value
+— an upstream copy-paste slip. It is deliberately left unaliased, because which source it
+means is genuinely ambiguous and §7's rule applies: a wrong match is worse than a missed
+one. If you ever decide to alias it, you are deciding on behalf of every pt-BR user which
+of two sites their library belongs to.
+
+This is a table, and tables rot. Re-check it the same way you would §6: read both
+`source-api/src/commonMain/kotlin/exh/source/SourceIds.kt` files. `tests/merge.mjs`
+asserts the computed ids still match Komikku's constants, so a drift shows up as a test
+failure rather than as silent duplicates.
+
 ### The language trap
 
 **Many sources publish one entry per language.** MangaDex alone has 60, all sharing name `MangaDex` and host `mangadex.org`, each with a different ID. A naive "first match wins" map picks whichever the index happens to list first — Afrikaans, in practice — and stamps every entry with the wrong source ID.
@@ -442,8 +477,10 @@ way. Matching on title across sources merges unrelated series.
 
 ### Matching tiers
 
-Exact `(source, url)`, then `(source, normalisedUrl)`, then — only for `_derivedSource`
-entries — `(source, normalisedTitle)`. Each tier is counted and the last one is logged as
+Source ids are canonicalised first (§3, "The same source under several ids") — otherwise
+the tiers below are matching on a key that two forks spell differently for the same site.
+Then: exact `(source, url)`, then `(source, normalisedUrl)`, then — only for
+`_derivedSource` entries — `(source, normalisedTitle)`. Each tier is counted and the last one is logged as
 a warning. Cross-family dedup is genuinely best-effort: a Kotatsu url shape need not match
 the Mihon one for the same site (§7 explains why per-parser url correction was rejected),
 and a weakly resolved source id may not match the real one at all.

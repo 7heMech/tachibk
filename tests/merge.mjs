@@ -423,6 +423,73 @@ function kotatsuZip(rows, cats) {
 }
 
 /* ===========================================================================
+ * 5b. One source, several ids.
+ *
+ * Reported from real use: merging a TachiyomiSY backup with a Komikku one produced
+ * two copies of every E-Hentai gallery. SY keeps E-Hentai on its own internal id
+ * (LEWD_SOURCE_SERIES + 1 = 6901) while Komikku moved it onto the `all.ehentai`
+ * extension ids and registers its built-in source under each of them, so the same
+ * url under two ids never matched.
+ * ======================================================================== */
+{
+  const EH_SY = 6901n;
+  const EH_EXT_ALL = mihonSourceId('E-Hentai', 'all', 1);
+  const EH_EXT_EN = mihonSourceId('E-Hentai', 'en', 1);
+  ok(EH_EXT_ALL === 1713178126840476467n, 'computed E-Hentai (all) id matches Komikku EH_SOURCE_ID: ' + EH_EXT_ALL);
+  ok(EH_EXT_EN === 57122881048805941n, 'computed E-Hentai (en) id matches Komikku\u2019s table: ' + EH_EXT_EN);
+  ok(mihonSourceId('ExHentai', 'all', 1) === 6225928719850211219n, 'and ExHentai matches EXH_SOURCE_ID');
+
+  const sy = (() => {
+    const r = new PW();
+    r.msg(1, mkManga(EH_SY, '/g/123/abc/', 'Shared Gallery', [], [chap('/g/123/abc/1', 'p1', 1, true, 4)]));
+    r.msg(101, src('E-Hentai', EH_SY));
+    return r.done();
+  })();
+  const komikku = (() => {
+    const r = new PW();
+    r.msg(1, mkManga(EH_EXT_EN, '/g/123/abc/', 'Shared Gallery', [], [chap('/g/123/abc/2', 'p2', 2, true, 9)]));
+    r.msg(1, mkManga(EH_EXT_ALL, '/g/999/zzz/', 'Other Gallery', [], []));
+    r.msg(101, src('E-Hentai (En)', EH_EXT_EN));
+    return r.done();
+  })();
+
+  logs.length = 0;
+  const a = await M.inspectBackup(await M.gzip(sy), 'sy.tachibk');
+  const b = await M.inspectBackup(await M.gzip(komikku), 'komikku.tachibk');
+  const out = M.decodeBackup(await M.gunzip(await M.runMerge([a, b], 'komikku', {}, cap)));
+
+  ok(out.manga.length === 2, 'the SY and Komikku copies collapse into one entry: ' + out.manga.length + ' total');
+  const shared = out.manga.find(m => m.title === 'Shared Gallery');
+  ok(shared.chapters.length === 2, 'and their read progress is unioned rather than split: ' + shared.chapters.length);
+  ok(String(shared.source) === String(EH_EXT_ALL), 'written with the extension id Komikku resolves: ' + shared.source);
+  ok(out.sources.length === 1, 'the source list collapses too: ' + out.sources.map(x => x.name + '=' + x.sourceId).join(', '));
+  ok(/appeared under 3 different source ids/.test(logs.join('\n')), 'the log names the ids it unified: '
+    + (logs.find(l => /different source ids/.test(l)) || '(none)'));
+
+  /* ...but TachiyomiSY's built-in source only answers to 6901, so a backup aimed at
+     SY has to carry that id rather than the canonical one. */
+  const toSy = M.decodeBackup(await M.gunzip(await M.runMerge([a, b], 'sy', {}, log)));
+  const sharedSy = toSy.manga.find(m => m.title === 'Shared Gallery');
+  ok(String(sharedSy.source) === '6901', 'targeting TachiyomiSY writes its internal id back: ' + sharedSy.source);
+  ok(toSy.sources.every(x => String(x.sourceId) === '6901'), 'and the source list agrees: ' + toSy.sources.map(x => x.sourceId).join(','));
+  ok(String(toSy.manga.find(m => m.title === 'Other Gallery').source) === '6901', 'including entries that only ever had the extension id');
+
+  /* Legacy pre-migration ids Komikku still rewrites on restore. */
+  const oldBk = (() => { const r = new PW(); r.msg(1, mkManga(6907n, '/g/1/', 'Old NHentai', [], [])); return r.done(); })();
+  const c = await M.inspectBackup(await M.gzip(oldBk), 'old.tachibk');
+  const migrated = M.decodeBackup(await M.gunzip(await M.runMerge([c], 'mihon', {}, log)));
+  ok(String(migrated.manga[0].source) === '7309872737163460316', 'legacy NHentai id 6907 migrated: ' + migrated.manga[0].source);
+
+  /* Ambiguous upstream value: Komikku lists 7151438547982231541 under both E-Hentai
+     and ExHentai for pt-BR, and it matches neither computed id. Left alone on
+     purpose \u2014 a wrong match is worse than a missed one (AGENTS.md §7). */
+  const amb = (() => { const r = new PW(); r.msg(1, mkManga(7151438547982231541n, '/g/7/', 'Ambiguous', [], [])); return r.done(); })();
+  const dz = await M.inspectBackup(await M.gzip(amb), 'amb.tachibk');
+  const left = M.decodeBackup(await M.gunzip(await M.runMerge([dz], 'mihon', {}, log)));
+  ok(String(left.manga[0].source) === '7151438547982231541', 'the ambiguous pt-BR id is passed through untouched: ' + left.manga[0].source);
+}
+
+/* ===========================================================================
  * 6. Per-target root filtering, on the merge path as well as the convert one.
  * ======================================================================== */
 {

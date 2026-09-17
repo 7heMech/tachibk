@@ -43,6 +43,8 @@ combined instead, in both directions:
 | `dateAdded` | earliest |
 | Read duration | summed |
 
+Source ids are normalised first. TachiyomiSY keeps E-Hentai and ExHentai on its own internal ids (6901/6902) while Komikku uses the extension's per-language ids, so without this a merge of the two produced two copies of every gallery. The output carries whichever id the target app can actually resolve.
+
 Entries are matched on source + url, falling back to a normalised url, and — only for
 Kotatsu entries, whose Mihon source id has to be derived rather than read — to a title
 match *within the same source*. Cross-format merges are best-effort for that reason and

@@ -1077,6 +1077,86 @@ function mergeCategories(libs, listKey, caseFold, log) {
   return out;
 }
 
+/* ---------- source id aliases ---------- */
+/* One source, several ids. TachiyomiSY keeps E-Hentai and ExHentai on its own
+   internal ids — `LEWD_SOURCE_SERIES + 1/+2`, i.e. 6901 and 6902 — while Komikku
+   moved them onto the ids of the `all.ehentai` extension, one per language, and
+   registers its built-in EHentai source under every one of them. Merging an SY
+   library with a Komikku one therefore produced two of every gallery: same url,
+   different source id, so nothing matched.
+
+   Verified against each project's own source-api/.../exh/source/SourceIds.kt.
+   SY and Komikku already agree on Pururin, Tsumino, 8Muses and HBrowse, so those
+   need no alias; the three `*_OLD_ID` values below are pre-migration Tachiyomi ids
+   that Komikku still rewrites on restore (EXHMigrations.kt) and that old backups
+   can still carry.
+
+   The per-language ids are computed rather than copied. 35 of the 36 in Komikku's
+   tables are exactly `mihonSourceId(name, lang, 1)`; the 36th is 7151438547982231541,
+   which Komikku lists under **both** E-Hentai and ExHentai for pt-BR and which
+   matches neither computed value — an upstream copy-paste slip. It is deliberately
+   left unaliased: which of the two it means is genuinely ambiguous, and per §7 a
+   wrong match is worse than a missed one. */
+const EH_LANGS = ['all', 'en', 'ja', 'zh', 'nl', 'fr', 'de', 'hu', 'it', 'ko',
+                  'pl', 'pt-BR', 'ru', 'es', 'th', 'vi', 'none', 'other'];
+const SOURCE_EQUIV = [
+  { key: 'ehentai',  label: 'E-Hentai', ext: 'E-Hentai', sy: 6901n },
+  { key: 'exhentai', label: 'ExHentai', ext: 'ExHentai', sy: 6902n },
+  { key: 'nhentai',  label: 'NHentai',  canon: 7309872737163460316n, legacy: [6907n] },
+  { key: 'tsumino',  label: 'Tsumino',  canon: 6707338697138388238n, legacy: [6909n] },
+  { key: 'hbrowse',  label: 'HBrowse',  canon: 1401584337232758222n, legacy: [6912n] },
+];
+const SOURCE_ALIAS = (() => {
+  const byId = new Map();
+  for (const e of SOURCE_EQUIV) {
+    if (!e.canon) e.canon = mihonSourceId(e.ext, 'all', 1);
+    const ids = new Set([e.canon.toString()]);
+    if (e.ext) for (const l of EH_LANGS) ids.add(mihonSourceId(e.ext, l, 1).toString());
+    if (e.sy !== undefined) ids.add(e.sy.toString());
+    for (const l of (e.legacy || [])) ids.add(l.toString());
+    for (const id of ids) byId.set(id, e);
+  }
+  return byId;
+})();
+const aliasOf = id => (id === undefined || id === null ? null : SOURCE_ALIAS.get(id.toString()) || null);
+
+/* Which id to actually write, which is app-specific: SY's built-in source only
+   answers to 6901/6902, so writing the extension id into an SY backup would leave
+   every one of those entries pointing at a source it does not have. Everyone else
+   reaches E-Hentai through the extension, and Komikku migrates 6901/6902 anyway. */
+function sourceIdFor(entry, target) {
+  if (target === 'sy' && entry.sy !== undefined) return entry.sy;
+  return entry.canon;
+}
+
+/* Collapse aliased ids to one canonical value before anything is matched on them.
+   Runs across every library at once so the log can say how many ids a source
+   actually turned up under. */
+function canonicaliseSources(libs, log) {
+  const hits = new Map();
+  const touch = e => {
+    const al = aliasOf(e.source);
+    if (!al) return;
+    let h = hits.get(al.key);
+    if (!h) { h = { entry: al, ids: new Set(), n: 0 }; hits.set(al.key, h); }
+    h.ids.add(e.source.toString());
+    h.n++;
+    e.source = al.canon;
+  };
+  for (const lib of libs) {
+    for (const e of lib.manga) touch(e);
+    for (const e of lib.anime) touch(e);
+    for (const list of [lib.sources, lib.animeSources]) {
+      for (const s of list) { const al = aliasOf(s.sourceId); if (al) { s.sourceId = al.canon; s.name = s.name || al.label; } }
+    }
+  }
+  for (const h of hits.values()) {
+    if (h.ids.size > 1) {
+      log(`${h.entry.label} appeared under ${h.ids.size} different source ids (${[...h.ids].join(', ')}) — treated as one source`, 'info');
+    }
+  }
+}
+
 /* ---------- ingestion ---------- */
 
 /* Category membership is carried as a set of *names* through the whole merge. Field
@@ -1230,6 +1310,24 @@ function buildMergedTachi(merged, target, opts, log) {
      @Required — an x5 file without it fails to deserialize on Anikku outright. */
   if (layout === 'x5') root.bool(500, false);
 
+  /* Canonical ids are an internal convention; each app gets the id it can actually
+     resolve. Applied to entries and to the source list together so the two agree. */
+  const outId = id => { const al = aliasOf(id); return al ? sourceIdFor(al, target) : id; };
+  const retarget = list => {
+    const out = new Map();
+    for (const [id, name] of list) {
+      const al = aliasOf(BigInt(id));
+      const k = outId(BigInt(id)).toString();
+      if (!out.get(k)) out.set(k, al ? al.label : name);
+    }
+    return out;
+  };
+  for (const e of merged.manga) e.source = outId(e.source);
+  for (const e of merged.anime) e.source = outId(e.source);
+  merged.sources = retarget(merged.sources);
+  merged.animeSources = retarget(merged.animeSources);
+  if (target === 'sy') log('E-Hentai and ExHentai written with TachiyomiSY\u2019s internal ids (6901/6902)', 'info');
+
   if (wantManga) {
     const catOrder = new Map(merged.categories.map((c, i) => [c.name, i]));
     let highStripped = 0;
@@ -1371,6 +1469,8 @@ async function runMerge(inputs, target, opts, log) {
     ? libFromKotatsu(inp.sec, ns, opts, kei, log)
     : libFromBackup(inp.bk, ns));
 
+  canonicaliseSources(libs, log);
+
   const mangaMerge = mergeKind(libs, 'manga', log);
   const animeMerge = mergeKind(libs, 'anime', log);
   renumberSeasons(animeMerge.entries, animeMerge.seasonOwner, log);
@@ -1417,8 +1517,9 @@ async function runMerge(inputs, target, opts, log) {
   if (app.fam === 'kotatsu') {
     if (merged.anime.length) log(`skipped ${merged.anime.length} anime — ${app.label} does not store anime`, 'warn');
     const catOrder = new Map(merged.categories.map((c, i) => [c.name, i]));
+    const outId = id => { const al = aliasOf(id); return al ? sourceIdFor(al, target) : id; };
     const bk = {
-      manga: merged.manga.map(m => ({ ...m, categories: [...m._cats].map(n => catOrder.get(n)).filter(o => o !== undefined) })),
+      manga: merged.manga.map(m => ({ ...m, source: outId(m.source), categories: [...m._cats].map(n => catOrder.get(n)).filter(o => o !== undefined) })),
       categories: merged.categories,
       sources: [...merged.sources].map(([id, name]) => ({ name, sourceId: BigInt(id) })),
     };
