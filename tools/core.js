@@ -529,6 +529,17 @@ function stripHighFields(msg, min = 500) {
   }
   return concat(parts);
 }
+/* Counts fields >= min in a message and its nested chapters/episodes, for logging
+   what a conversion carries. Mirrors stripHighFields' recursion into field 16. */
+function countHighFields(msg, min) {
+  let n = 0;
+  for (const { f, w, val } of pbFields(msg)) {
+    if (f >= min) n++;
+    else if (f === 16 && w === 2) n += countHighFields(val, min);
+  }
+  return n;
+}
+
 function convertTachiManga(buf, fromApp, toApp, log) {
   const keep = new Set(APPS[toApp].root || []);
   const stripNested = APPS[fromApp].kinds.includes('anime') && !APPS[toApp].kinds.includes('anime');
@@ -560,14 +571,27 @@ function convertTachiAnime(buf, toApp, log) {
   const remap = { [S.anime]: D.anime, [S.cats]: D.cats, [S.sources]: D.sources,
                   [S.repo]: D.repo, [S.exts]: D.exts, [S.buttons]: D.buttons };
   const parts = [];
+  /* Aniyomi and Animetail both declare isLegacy at root 500 and pick their
+     deserializer from it. Neither marks it @Required, so this is belt-and-braces —
+     but Anikku's current Backup does, and stating it costs two bytes. Never write it
+     for a low-layout target: Anikku's detector is `isLegacy` alone, defaulting true,
+     and that default is what routes the file to LegacyBackup. */
+  if (dst === 'x5') parts.push(varintBytes((500 << 3) | 0), varintBytes(0));
+  let carried = 0;
   for (const { f, w, val } of pbFields(buf)) {
     const to = remap[f];
-    if (to === undefined) continue;
-    let payload = val;
-    if (f === S.anime && w === 2) payload = stripHighFields(val, 500);
-    parts.push(varintBytes((to << 3) | w), varintBytes(payload.length), payload);
+    if (to === undefined || w !== 2) continue;
+    /* Nothing nested is stripped. ANIME_LAYOUT renumbers the *root* only; the
+       anime and episode messages are identical across the three forks that use
+       these layouts, including every field ≥500 — see AGENTS.md §2 for the table.
+       This route previously ran stripHighFields(val, 500) here, which recursed into
+       field 16 and deleted season links, background art, fillermarks, episode
+       summaries and preview urls that the target declares and restores. */
+    if (f === S.anime) carried += countHighFields(val, 500);
+    parts.push(varintBytes((to << 3) | w), varintBytes(val.length), val);
   }
   if (!parts.length) throw new Error('Nothing to convert — no anime fields matched.');
+  if (carried) log(`carried ${carried} season/background/fillermark fields ≥500 — both layouts declare them identically`, 'info');
   return concat(parts);
 }
 

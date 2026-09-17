@@ -32,7 +32,11 @@ const pref=new PW(); pref.str(1,'some_pref'); root.msg(104,pref.done());
 const feed=new PW(); feed.str(1,'komikku-feed'); root.msg(610,feed.done());
 // Animetail anime blocks (5xx)
 const anime=new PW(); anime.vint(1,999n).str(2,'/anime/x').str(3,'Anime X');
-const ep=new PW(); ep.str(1,'/ep/1').str(2,'Ep 1'); anime.msg(16,ep.done()); anime.str(555,'anime-junk');
+// Fields >=500 that Aniyomi, Animetail and Anikku all declare identically: background
+// art, and the season linkage that associates a season with its parent.
+anime.str(500,'https://cdn/bg.jpg').vint(502,5n).vint(503,77n);
+const ep=new PW(); ep.str(1,'/ep/1').str(2,'Ep 1').bool(501,true).str(502,'ep summary');
+anime.msg(16,ep.done()); anime.str(555,'anime-junk');
 root.msg(501,anime.done());
 const acat=new PW(); acat.str(1,'Watching'); root.msg(502,acat.done());
 const asrc=new PW(); asrc.str(1,'AnimeSrc').vint(2,42n); root.msg(503,asrc.done());
@@ -79,7 +83,22 @@ const seen=new Set(); {let off=0; const b=d3raw;
     seen.add(f);}}
 ok(seen.has(3)&&seen.has(4)&&seen.has(103),'anime remapped to Anikku numbering 3/4/103');
 ok(!seen.has(1)&&!seen.has(2)&&!seen.has(101),'manga data discarded in anime route');
-ok(!TD.decode(d3raw).includes('anime-junk'),'nested anime field 555 stripped');
+// This route used to run stripHighFields(val,500) over the anime message, which
+// recursed into field 16 and deleted every one of these. Anikku's own BackupManga
+// declares 500 and 502-507, and its BackupChapter declares 501/502/503, exactly as
+// Aniyomi's BackupAnime and BackupEpisode do — so the strip was pure data loss on
+// this project's default route. Nothing nested is stripped here any more.
+const d3txt = TD.decode(d3raw);
+ok(d3txt.includes('https://cdn/bg.jpg'),'anime backgroundUrl (500) carried to Anikku');
+ok(d3txt.includes('ep summary'),'episode summary (502) carried to Anikku');
+{
+  const a3 = [...M.pbFields(d3raw)].find(x=>x.f===3);
+  const af = [...M.pbFields(a3.val)];
+  const epf = [...M.pbFields(af.find(x=>x.f===16).val)].map(x=>x.f);
+  ok(af.some(x=>x.f===502) && af.some(x=>x.f===503),'season parentId/id (502/503) carried: '+af.map(x=>x.f).join(','));
+  ok(epf.includes(501),'episode fillermark (501) carried: '+epf.join(','));
+}
+ok(d3txt.includes('anime-junk'),'a number no fork declares rides along too — unknown fields are skipped on restore, not rejected');
 
 // ---- 4. Mihon -> Kotatsu (offline) ----
 console.log('\n— route: mihon -> kotatsu (offline)');

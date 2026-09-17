@@ -78,6 +78,8 @@ Chapters, read state and history survive intact. Converting away from an Aniyomi
 | `backupExtensions` | 504 | 106 |
 | `backupCustomButton` | 506 | 109 |
 
+Only the **root** numbering changes. The nested `BackupAnime`/`BackupEpisode` messages are identical across all three forks, including every field ≥500 — season linkage (502/503), background art (500), fillermarks, episode summaries and preview urls — so those are carried across untouched.
+
 Anikku's root message has **no manga fields at all**, so pairs with nothing in common — Anikku → Mihon, say — are refused with an explanation rather than silently producing an empty backup. To split an Aniyomi or Animetail library across both apps, convert from that original backup twice: once as Manga, once as Anime.
 
 Note that field 106 is `backupExtensionRepo` in Mihon but `backupExtensions` in Anikku and legacy Aniyomi — same number, different message. The kind guard is what keeps those from ever meeting.

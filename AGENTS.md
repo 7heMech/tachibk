@@ -143,20 +143,44 @@ smaller than Aniyomi's. Read from `komikku-app/anikku@master`, Anikku's `BackupM
 declares `501 fillermark`, `502 summary`, `503 previewUrl`, identical to Aniyomi's
 `BackupEpisode`.
 
-So **`convertTachiAnime`'s `stripHighFields(val, 500)` is wrong**. On the tool's own
-default route — Aniyomi → Anikku — it deletes season hierarchies, background art,
-fillermarks, episode summaries and preview urls that Anikku fully supports, and it
-recurses into field 16 so the episode-level ones go too. This is a real, shipping data
-loss, it predates the merge engine, and it is **not fixed here**: changing it is a
-behaviour change to the conversion route with its own test surface, and this was found
-while building something else. Fix it on its own branch, with `guard.mjs` updated to
-assert the fields survive.
+Read from each fork's own `Backup*.kt`, the nested ≥500 range is **unanimous**:
 
-The merge engine deliberately does *not* copy that behaviour: `buildMergedTachi` passes
-`dropHigh = false` for anime at both layouts. Nested ≥500 stripping there is reserved for
-manga going into a manga-only target, where Mihon's `BackupChapter` genuinely stops at 13.
-`tests/merge.mjs` pins both halves, and the asymmetry is the point — do not "make them
-consistent" without reading the two `Backup*.kt` files first.
+| # | Aniyomi `BackupAnime` | Animetail `BackupAnime` | Anikku `BackupManga` |
+|---|---|---|---|
+| 500 | backgroundUrl | backgroundUrl | backgroundUrl |
+| 502 | parentId | parentId | parentId |
+| 503 | id | id | id |
+| 504 | seasonFlags | seasonFlags | seasonFlags |
+| 505 | seasonNumber | seasonNumber | seasonNumber |
+| 506 | seasonSourceOrder | seasonSourceOrder | seasonSourceOrder |
+| 507 | fetchType | fetchType | fetchType |
+| 600, 602–603, 800–805 | — | customStatus, custom* | mergedMangaReferences, customStatus, custom* |
+
+| # | Aniyomi `BackupEpisode` | Animetail `BackupEpisode` | Anikku `BackupChapter` |
+|---|---|---|---|
+| 501 | fillermark | fillermark | fillermark |
+| 502 | summary | summary | summary |
+| 503 | previewUrl | previewUrl | previewUrl |
+| 504 | — | dateUploadOverride | — |
+
+There is no number in that range where any two of the three disagree, so the strip had no
+protective value and was pure loss: on the tool's own default route, Aniyomi → Anikku, it
+deleted season hierarchies, background art, fillermarks, episode summaries and preview
+urls that Anikku restores — and it recursed into field 16, so the episode-level ones went
+too. **Fixed:** `convertTachiAnime` strips nothing nested, and logs how many ≥500 fields
+it carried. `guard.mjs` asserts they survive in both directions.
+
+Note the contrast with `convertTachiManga`, which is right to strip: it only does so when
+the target is manga-only (`stripNested`), where Mihon's `BackupChapter` genuinely stops at
+13. Anime-capable → anime-capable strips nothing, in either route. The merge engine
+follows the same rule — `buildMergedTachi` passes `dropHigh = false` for anime at both
+layouts and reserves nested stripping for manga into a manga-only target. `tests/merge.mjs`
+pins both halves. Do not "make them consistent" without reading the `Backup*.kt` files
+first; the asymmetry is the correct answer, not an oversight.
+
+`convertTachiAnime` also writes `500 = false` when the target layout is x5, and never when
+it is low — the same rule the merge builder follows, for the reasons in the `isLegacy`
+section above.
 
 ## 3. How source matching works
 

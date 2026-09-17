@@ -826,7 +826,7 @@
 
   const ROUTE_TEXT = {
     tachi2tachi: () => `Keeps your <b>manga library, categories, sources, settings and extension repos</b>, and drops everything ${APPS[to()].label} can't read. Chapters, read progress and history all survive.`,
-    anime: () => `Renumbers the <b>anime library, categories, sources and extension repos</b> for ${APPS[to()].label}. Manga data in the backup is discarded — run a second pass with Manga selected if you need it.`,
+    anime: () => `Renumbers the <b>anime library, categories, sources and extension repos</b> for ${APPS[to()].label}. Only the root numbering changes — seasons, background art, fillermarks and episode summaries are carried across untouched. Manga data in the backup is discarded — run a second pass with Manga selected if you need it.`,
     tachi2kotatsu: () => `Rebuilds your library as Kotatsu <b>favourites, categories, history and bookmarks</b>. <span class="lossy">Only manga from sources that also exist in Kotatsu can come across</span> — the rest are listed in the log and skipped. Per-chapter read state isn't kept; the latest read chapter becomes your reading position.`,
     kotatsu2tachi: () => `Rebuilds your <b>library, categories and reading position</b> as a ${APPS[to()].label} backup, and adds the Keiyoushi repo so extensions install without trust prompts. <span class="lossy">Kotatsu backups don't store chapter lists</span>, so entries arrive empty — refresh them once after restoring.`,
     kotatsu2kotatsu: () => `Kotatsu and Usagi share the same backup format, so every section is <b>copied across untouched</b>. Nothing is lost.`,
@@ -851,8 +851,9 @@
         ['backupAnimeExtensionRepo', String(s.repo), 'backupAnimeExtensionRepo', String(d.repo), 0],
         ['backupExtensions', String(s.exts), 'backupExtensions', String(d.exts), 0],
         ['backupCustomButton', String(s.buttons), 'backupCustomButton', String(d.buttons), 0],
+        ['seasons, background art', '500–507', 'carried unchanged', '500–507', 0],
+        ['fillermarks, episode summaries', '501–503', 'carried unchanged', '501–503', 0],
         ['Manga data', '1, 2, 101…', 'discarded', '', 1],
-        ['Fields', '500–599', 'stripped', '', 1],
       ];
     },
     tachi2kotatsu: () => [
