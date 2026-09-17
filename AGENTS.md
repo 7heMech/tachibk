@@ -31,6 +31,21 @@ extraction are hand-rolled in `tools/lib.ts`. `bun run build` substitutes `/*__D
 
 The split exists so `core.js` can be imported into Node for testing without a DOM. Keep DOM access out of `core.js`.
 
+The page has two modes. **Convert** takes one backup between two named apps. **Merge**
+takes any number of backups from any number of devices, in any mix of formats, and
+produces one file for a chosen target — see §10, which is where the sharp edges are.
+
+## 1a. Read this before changing the model
+
+`AGENTS.md` is written in an order that no longer matches the code's risk profile. The
+conversion routes filter bytes and therefore keep fields they have never heard of. The
+merge engine **rebuilds** entries from a decoded model, so every field the decoder does
+not know about is a field the user loses. `decodeManga`/`decodeChapter`/`decodeCategory`
+keep unrecognised fields as raw slices in `_raw` and the encoders re-emit them; do not
+"simplify" that away. `tests/merge.mjs` opens with a decode → encode round trip over
+every field Mihon declares plus invented fork numbers, and nothing else in that suite
+is worth trusting if it fails.
+
 ## 2. The rule that matters most
 
 **Never assume two forks share a field number. Go read their `Backup.kt`.**
@@ -49,7 +64,16 @@ Every serious bug in this project came from assuming uniformity across forks. Th
 
 And the trap that motivated the `kinds` guard:
 
-> Field **106** is `backupExtensionStores` in Mihon/Komikku/SY, but `backupExtensions` in Anikku and legacy Aniyomi. Same number, incompatible message.
+> Field **106** is `backupExtensionStores` in Mihon/Komikku/SY, `backupMangaExtensionRepo`
+> (a `BackupExtensionRepos`) in current Aniyomi, and `backupExtensions` in Anikku and
+> legacy Aniyomi. One number, three incompatible messages.
+
+Field **107** repeats the trick inside the legacy anime layout: `backupAnimeExtensionStores`
+(a `BackupExtensionStore`) in Aniyomi's `LegacyBackup`, but `backupExtensionRepo` (a
+`BackupExtensionRepos`) in Anikku's. The two shapes are close enough to deserialize into
+each other without an error and mean different things. This is why the merge engine never
+carries 106 or 107 across and emits the Keiyoushi store fresh instead, for the three forks
+whose shape is confirmed (`EXT_STORE_APPS`).
 
 This is why `convertTachiManga` filters against **`APPS[target].root`**, a per-app whitelist — not a shared constant and not a denylist. A denylist ("drop 500–599, pass the rest") looks more future-proof and is actively wrong here: it would have written 610 into TachiyomiSY and 106 into Yōkai.
 
@@ -63,7 +87,53 @@ curl -sL "https://raw.githubusercontent.com/<owner>/<repo>/<branch>/$P" \
   | grep -E "@ProtoNumber|data class"
 ```
 
-Branches vary: Mihon and Neko use `main`; Komikku, SY, Yōkai, Anikku, and kotatsu-parsers use `master`. Aniyomi is `main` and declares **two** messages — `LegacyBackup` (anime at 3/4/103/107) and the current `Backup` (anime at 501–506). Anikku uses the legacy shape, which is why the original `501 → 3` script works.
+Branches vary: Mihon and Neko use `main`; Komikku, SY, Yōkai, Anikku, and kotatsu-parsers use `master`. Aniyomi is `main` and declares **two** messages — `LegacyBackup` (anime at 3/4/103/107) and the current `Backup` (anime at 501–506).
+
+### Field 500 `isLegacy`, and why `APPS.anikku.anime = 'low'` is a choice
+
+Anikku is **not** legacy-only any more. Current Anikku declares both a `LegacyBackup`
+(3/4/103/…) and a current `Backup` with anime at 501–506 and, critically:
+
+```kotlin
+@Required @ProtoNumber(500) val isLegacy: Boolean = false
+```
+
+Each app picks its deserializer from that field, and the two rules differ:
+
+| App | `isLegacyBackup(bytes)` |
+|---|---|
+| Aniyomi | `isLegacy` (500, **defaults true**) `&& backupAnimeSources(103).isNotEmpty()` |
+| Anikku | `isLegacy` (500, **defaults true**) alone |
+
+Three consequences, all load-bearing:
+
+- The tool writes Anikku in the low layout and omits 500, so `isLegacy` defaults to
+  `true` and Anikku takes the legacy path. That is correct — but correct on a
+  one-field margin, which is why it is written down here.
+- Any **x5** output must write `500 = false`. Anikku marks the field `@Required`, so an
+  x5 file without it throws `SerializationException` and the user sees nothing but
+  "invalid backup file". `buildMergedTachi` writes it; `tests/merge.mjs` asserts it.
+- A file that mixed the layouts — anime at 501 alongside sources at 103 — would make
+  Aniyomi decode a current backup with the *legacy* serializer: garbage, silently, rather
+  than a rejection. `verifyTachiRoots()` asserts on every merge that the output carries
+  exactly one layout, and the merge path must never lose that check.
+
+`ANIME_LAYOUT` keeps Anikku on `low` because that is what ships today and what the whole
+existing route matrix is tested against. `opts.anikkuModern` switches the merge output to
+x5 with `500 = false` for whenever that stops being true; it is deliberately not exposed
+in the UI.
+
+### BackupAnime fields ≥ 500 are not fork noise
+
+```
+500 backgroundUrl   502 parentId   503 id   504 seasonFlags   505 seasonNumber
+506 seasonSourceOrder   507 fetchType
+```
+
+502 and 503 are **season linkage** — `id` associates a season with its `parentId`. So
+`stripHighFields(val, 500)` on an Aniyomi → Anikku conversion destroys the season
+hierarchy, and 503 being a device-local row id is why the merge engine renumbers them
+(§10). Both paths now say so in the log rather than dropping it quietly.
 
 ## 3. How source matching works
 
@@ -168,6 +238,8 @@ move all seven to Bun and delete the split in `tools/test.ts`.
 | `rootcheck` | per-target root filtering for every Mihon-family app |
 | `categories` | category order/id bug regression — see below |
 | `domcheck` | static: markup and script agree on ids, build integrity |
+| `merge` | decode/encode round-trip fidelity, dedup, season renumbering, per-target roots |
+| `mergeui` | jsdom: mode switch, multi-file add, priority reorder, full merge click-through |
 
 Every suite builds its own module from `public/index.html`, so they test **the shipped artifact** and can run in any order. Don't reintroduce a shared temp module — an earlier version had suites clobbering each other's exports.
 
@@ -276,3 +348,64 @@ Two corrections to `mk-bkconv` worth knowing, since it's the closest reference a
 
 - Its hardcoded `lang` values are frequently incorrect — it has MangaDex as `all`, yielding `6404943692147160087` instead of the real `2499283573021220255`. The *algorithm* is right; validated at 1,795/2,018 exact matches, the remainder being sources with `versionId != 1`. Prefer real IDs from the backup or the Keiyoushi index over recomputing from a name.
 - Its field 106 shape (`BackupExtensionRepos`) predates Mihon's current `BackupExtensionStore`. We write the current shape with `isLegacy = true`, which is the one item here inferred rather than confirmed against a real restore — **verify it if you touch that path.**
+
+## 10. The merge engine
+
+`runMerge(inputs, target, opts, log)` takes any number of `inspectBackup()` results and
+writes one file. Inputs are identified from their bytes, not from a dropdown: ZIP means
+Kotatsu, gzip/protobuf gets its anime layout sniffed by `detectAnimeLayout`. The same
+target matrix as conversion applies — Aniyomi and Animetail get a hybrid manga+anime
+file, Mihon-family targets get manga, Anikku gets anime, Kotatsu gets a zip.
+
+### Priority is list order, and it only decides conflicts
+
+The first file wins metadata ties. Everything that can be unioned *is* unioned, in both
+directions, so no device's progress is lost to another's: `read = a || b`,
+`lastPageRead = max`, `bookmark = a || b`, `readDuration = sum`, category membership is a
+set union, `dateAdded = min`, `lastModifiedAt = max`. This is why the UI has explicit
+↑/↓ buttons rather than an implicit "newest device wins" — a rule the user can see beats
+one inferred from timestamps they cannot.
+
+### Four things that are easy to get wrong here
+
+**Category membership travels as names, never indices.** Field 17 holds each category's
+*order* — its position in that backup's own list — so the same integer means different
+things in different files. Entries are resolved to names on the way in and back to fresh
+positions on the way out. This is §8 all over again, with N files instead of one.
+
+**Season ids are device-local.** `BackupAnime.id` (503) and `parentId` (502) are row ids.
+Union two devices and device B's `id = 1` collides with device A's, silently re-parenting
+a season under the wrong show — §8 in anime form. `renumberSeasons()` assigns every id
+from scratch and drops a parent link whose target did not survive the merge rather than
+leaving it pointing at whatever now holds that number. `tests/merge.mjs` has a fixture
+where both devices number from 1.
+
+**`sourceOrder` is the source site's listing order, not a sort key.** Most sites list
+newest first, so recomputing it from chapter numbers inverts the library. Chapters only
+one device knew about are appended past the highest existing `sourceOrder`, and the log
+tells the user an in-app refresh restores the real ordering. Do not "fix" this by
+sorting.
+
+**Kotatsu has no chapters.** `mergeChapters` returns early on an empty incoming list and
+never assigns over a populated one — the regression test for this asserts a Mihon entry
+keeps its chapters after a Kotatsu entry merges into it. Kotatsu entries also carry
+`_derivedSource`, because their Mihon source id was *computed* rather than read; that
+flag is the only thing that unlocks the title-matching fallback, and it must stay that
+way. Matching on title across sources merges unrelated series.
+
+### Matching tiers
+
+Exact `(source, url)`, then `(source, normalisedUrl)`, then — only for `_derivedSource`
+entries — `(source, normalisedTitle)`. Each tier is counted and the last one is logged as
+a warning. Cross-family dedup is genuinely best-effort: a Kotatsu url shape need not match
+the Mihon one for the same site (§7 explains why per-parser url correction was rejected),
+and a weakly resolved source id may not match the real one at all.
+
+### What a merge does not carry
+
+Preferences (104/105) come from the highest-priority input that has them; they are opaque
+key/value blobs with no merge semantics, and the log names both the file they came from
+and how many were discarded. Extension repo lists (106/107) are never carried — see §2.
+Saved searches (600) and feeds (610) are dropped. Kotatsu → Kotatsu skips the Mihon-shaped
+model entirely (`mergeKotatsuSections`) because that model has no room for tags, rating,
+nsfw, alt_title or a bookmark's scroll/percent.

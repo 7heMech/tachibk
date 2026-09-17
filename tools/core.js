@@ -294,74 +294,177 @@ function pickLang(list, prefLang) {
 }
 
 /* ---------- Mihon protobuf model ---------- */
-function decodeChapter(b) {
+/* The conversion routes filter bytes, so every field a fork declares survives them
+   whether or not this file knows what it is. The merge engine rebuilds entries, so
+   it cannot rely on that: decoders here record each field they do not understand as
+   a raw slice in `_raw`, and the encoders re-emit those verbatim. Without it a merge
+   would silently drop tracking (18), notes (110), excludedScanlators (108),
+   chapterFlags (101), updateStrategy (105), memo (112) and every fork-specific
+   field — data a plain conversion keeps. See AGENTS.md §2. */
+function rawPush(o, msg, tagStart, end) { (o._raw || (o._raw = [])).push(msg.subarray(tagStart, end)); }
+function rawFieldNum(slice) { const [tag] = readVarint(slice, 0); return Number(tag >> 3n); }
+function rawBytes(o, min) {
+  if (!o._raw || !o._raw.length) return null;
+  const keep = min === undefined ? o._raw : o._raw.filter(s => rawFieldNum(s) < min);
+  return keep.length ? concat(keep) : null;
+}
+function rawDropped(o, min) {
+  if (min === undefined || !o._raw) return [];
+  return o._raw.filter(s => rawFieldNum(s) >= min).map(rawFieldNum);
+}
+
+/* BackupChapter 1-13; BackupEpisode adds 16 totalSeconds and 501 fillermark.
+   Every branch pins the wire type as well as the number — a mismatch means the
+   fork reused the number for something else, and raw passthrough is the safe
+   answer there, not a misread value. */
+function decodeChapter(b, isEpisode) {
   const c = {};
-  for (const { f, w, val } of pbFields(b)) {
+  for (const { f, w, val, tagStart, end } of pbFields(b)) {
     if (f === 1 && w === 2) c.url = readStr(val);
     else if (f === 2 && w === 2) c.name = readStr(val);
     else if (f === 3 && w === 2) c.scanlator = readStr(val);
-    else if (f === 4) c.read = val !== 0n;
-    else if (f === 5) c.bookmark = val !== 0n;
-    else if (f === 6) c.lastPageRead = asNum(val);
-    else if (f === 8) c.dateUpload = s64(val);
+    else if (f === 4 && w === 0) c.read = val !== 0n;
+    else if (f === 5 && w === 0) c.bookmark = val !== 0n;
+    else if (f === 6 && w === 0) c.lastPageRead = asNum(val);
+    else if (f === 7 && w === 0) c.dateFetch = s64(val);
+    else if (f === 8 && w === 0) c.dateUpload = s64(val);
     else if (f === 9 && w === 5) c.chapterNumber = readF32(val);
-    else if (f === 10) c.sourceOrder = asNum(val);
+    else if (f === 10 && w === 0) c.sourceOrder = asNum(val);
+    else if (f === 11 && w === 0) c.lastModifiedAt = s64(val);
+    else if (f === 12 && w === 0) c.version = s64(val);
+    else if (isEpisode && f === 16 && w === 0) c.totalSeconds = s64(val);
+    else if (isEpisode && f === 501 && w === 0) c.fillermark = val !== 0n;
+    else rawPush(c, b, tagStart, end);
   }
   return c;
 }
-function decodeManga(b) {
+function encodeChapter(c, isEpisode) {
+  const w = new PW();
+  w.str(1, c.url).str(2, c.name).str(3, c.scanlator)
+   .bool(4, c.read).bool(5, c.bookmark).vint(6, c.lastPageRead)
+   .vint(7, c.dateFetch).vint(8, c.dateUpload);
+  if (c.chapterNumber !== undefined) w.f32(9, c.chapterNumber);
+  w.vint(10, c.sourceOrder).vint(11, c.lastModifiedAt).vint(12, c.version);
+  if (isEpisode) { w.vint(16, c.totalSeconds); w.bool(501, c.fillermark); }
+  const r = rawBytes(c);
+  if (r) w.raw(r);
+  return w.done();
+}
+
+/* BackupManga / BackupAnime. 502 parentId and 503 id are decoded for anime only,
+   because they are device-local season identifiers the merge engine has to
+   renumber; 500/504/505/506/507 ride along in `_raw` untouched. */
+function decodeManga(b, isAnime) {
   const m = { genre: [], chapters: [], categories: [], history: [] };
-  for (const { f, w, val } of pbFields(b)) {
-    if (f === 1) m.source = s64(val);
+  for (const { f, w, val, tagStart, end } of pbFields(b)) {
+    if (f === 1 && w === 0) m.source = s64(val);
     else if (f === 2 && w === 2) m.url = readStr(val);
     else if (f === 3 && w === 2) m.title = readStr(val);
     else if (f === 4 && w === 2) m.artist = readStr(val);
     else if (f === 5 && w === 2) m.author = readStr(val);
     else if (f === 6 && w === 2) m.description = readStr(val);
     else if (f === 7 && w === 2) m.genre.push(readStr(val));
-    else if (f === 8) m.status = asNum(val);
+    else if (f === 8 && w === 0) m.status = asNum(val);
     else if (f === 9 && w === 2) m.thumbnailUrl = readStr(val);
-    else if (f === 13) m.dateAdded = s64(val);
-    else if (f === 16 && w === 2) m.chapters.push(decodeChapter(val));
-    else if (f === 17) {
-      if (w === 0) m.categories.push(asNum(val));
-      else if (w === 2) { let o = 0; while (o < val.length) { let v; [v, o] = readVarint(val, o); m.categories.push(asNum(v)); } }
-    }
-    else if (f === 100) m.favorite = val !== 0n;
+    else if (f === 13 && w === 0) m.dateAdded = s64(val);
+    else if (f === 16 && w === 2) m.chapters.push(decodeChapter(val, isAnime));
+    else if (f === 17 && w === 0) m.categories.push(asNum(val));
+    else if (f === 17 && w === 2) { let o = 0; while (o < val.length) { let v; [v, o] = readVarint(val, o); m.categories.push(asNum(v)); } }
+    else if (f === 100 && w === 0) m.favorite = val !== 0n;
     else if (f === 104 && w === 2) {
       const h = {};
       for (const q of pbFields(val)) {
         if (q.f === 1 && q.w === 2) h.url = readStr(q.val);
-        else if (q.f === 2) h.lastRead = s64(q.val);
+        else if (q.f === 2 && q.w === 0) h.lastRead = s64(q.val);
+        else if (q.f === 3 && q.w === 0) h.readDuration = s64(q.val);
+        else rawPush(h, val, q.tagStart, q.end);
       }
       m.history.push(h);
     }
-    else if (f === 106) m.lastModifiedAt = s64(val);
+    else if (f === 106 && w === 0) m.lastModifiedAt = s64(val);
+    else if (f === 107 && w === 0) m.favoriteModifiedAt = s64(val);
+    else if (f === 109 && w === 0) m.version = s64(val);
+    else if (isAnime && f === 502 && w === 0) m.seasonParentId = s64(val);
+    else if (isAnime && f === 503 && w === 0) m.seasonId = s64(val);
+    else rawPush(m, b, tagStart, end);
   }
   return m;
 }
+function encodeManga(m, isAnime, dropHigh) {
+  const w = new PW();
+  w.vint(1, m.source).str(2, m.url).str(3, m.title).str(4, m.artist)
+   .str(5, m.author).str(6, m.description);
+  for (const g of m.genre) w.str(7, g);
+  w.vint(8, m.status).str(9, m.thumbnailUrl).vint(13, m.dateAdded);
+  for (const c of m.chapters) w.msg(16, encodeChapter(c, isAnime));
+  for (const c of m.categories) w.vint(17, c);
+  w.bool(100, m.favorite);
+  for (const h of m.history) {
+    const hw = new PW();
+    hw.str(1, h.url).vint(2, h.lastRead).vint(3, h.readDuration);
+    const hr = rawBytes(h); if (hr) hw.raw(hr);
+    w.msg(104, hw.done());
+  }
+  w.vint(106, m.lastModifiedAt).vint(107, m.favoriteModifiedAt).vint(109, m.version);
+  if (isAnime && !dropHigh) w.vint(502, m.seasonParentId).vint(503, m.seasonId);
+  const r = rawBytes(m, dropHigh ? 500 : undefined);
+  if (r) w.raw(r);
+  return w.done();
+}
+
+/* BackupCategory — field 100 is `flags` (per-category sort and display mode).
+   It was previously dropped on decode, which is invisible to the byte-filtering
+   routes and would have been a real loss through the merge engine. */
+function decodeCategory(b) {
+  const c = {};
+  for (const { f, w, val, tagStart, end } of pbFields(b)) {
+    if (f === 1 && w === 2) c.name = readStr(val);
+    else if (f === 2 && w === 0) c.order = asNum(val);
+    else if (f === 3 && w === 0) c.id = s64(val);
+    else if (f === 100 && w === 0) c.flags = s64(val);
+    else rawPush(c, b, tagStart, end);
+  }
+  return c;
+}
+function encodeCategory(c) {
+  const w = new PW();
+  w.str(1, c.name).vint(2, c.order).vint(3, c.id).vint(100, c.flags === undefined ? 0n : c.flags);
+  const r = rawBytes(c); if (r) w.raw(r);
+  return w.done();
+}
+function decodeSource(b) {
+  const s = {};
+  for (const { f, w, val, tagStart, end } of pbFields(b)) {
+    if (f === 1 && w === 2) s.name = readStr(val);
+    else if (f === 2 && w === 0) s.sourceId = s64(val);
+    else rawPush(s, b, tagStart, end);
+  }
+  return s;
+}
+function encodeSource(s) {
+  const w = new PW();
+  w.str(1, s.name).vint(2, s.sourceId);
+  const r = rawBytes(s); if (r) w.raw(r);
+  return w.done();
+}
+
+/* Decodes manga AND, when the file carries one, the anime half at whichever root
+   layout it uses. Everything not decoded is kept per-field in `rootRaw` so a
+   caller can make its own decision about carrying it. */
 function decodeBackup(buf) {
-  const bk = { manga: [], categories: [], sources: [], rootFields: new Set() };
-  for (const { f, w, val } of pbFields(buf)) {
+  const bk = { manga: [], categories: [], sources: [], rootFields: new Set(), rootRaw: new Map(),
+               anime: [], animeCategories: [], animeSources: [], animeLayout: null };
+  bk.animeLayout = detectAnimeLayout(buf);
+  const A = bk.animeLayout ? ANIME_LAYOUT[bk.animeLayout] : null;
+  for (const { f, w, val, tagStart, end } of pbFields(buf)) {
     bk.rootFields.add(f);
-    if (f === 1 && w === 2) bk.manga.push(decodeManga(val));
-    else if (f === 2 && w === 2) {
-      const c = {};
-      for (const q of pbFields(val)) {
-        if (q.f === 1 && q.w === 2) c.name = readStr(q.val);
-        else if (q.f === 2) c.order = asNum(q.val);
-        else if (q.f === 3) c.id = s64(q.val);
-      }
-      bk.categories.push(c);
-    }
-    else if (f === 101 && w === 2) {
-      const s = {};
-      for (const q of pbFields(val)) {
-        if (q.f === 1 && q.w === 2) s.name = readStr(q.val);
-        else if (q.f === 2) s.sourceId = s64(q.val);
-      }
-      bk.sources.push(s);
-    }
+    if (f === 1 && w === 2) bk.manga.push(decodeManga(val, false));
+    else if (f === 2 && w === 2) bk.categories.push(decodeCategory(val));
+    else if (f === 101 && w === 2) bk.sources.push(decodeSource(val));
+    else if (A && f === A.anime && w === 2) bk.anime.push(decodeManga(val, true));
+    else if (A && f === A.cats && w === 2) bk.animeCategories.push(decodeCategory(val));
+    else if (A && f === A.sources && w === 2) bk.animeSources.push(decodeSource(val));
+    else { const a = bk.rootRaw.get(f); if (a) a.push(buf.subarray(tagStart, end)); else bk.rootRaw.set(f, [buf.subarray(tagStart, end)]); }
   }
   return bk;
 }
@@ -499,7 +602,13 @@ async function convertToKotatsu(buf, opts, log) {
   const bk = decodeBackup(buf);
   log(`parsed ${bk.manga.length} manga, ${bk.categories.length} categories, ${bk.sources.length} sources`, 'info');
   const kei = opts.useKeiyoushi ? await loadKeiyoushi(log).catch(e => { log('Keiyoushi fetch failed (' + e.message + ') — offline matching only', 'warn'); return null; }) : null;
+  return buildKotatsu(bk, opts, kei, log);
+}
 
+/* Split out of convertToKotatsu so the merge engine can hand it an already-merged
+   library instead of a freshly decoded one. `bk` only needs .manga, .categories and
+   .sources in the decoded shape. */
+async function buildKotatsu(bk, opts, kei, log) {
   const srcNameById = new Map();
   for (const s of bk.sources) if (s.sourceId !== undefined) srcNameById.set(s.sourceId.toString(), s.name || '');
 
@@ -608,17 +717,13 @@ const KEIYOUSHI_STORE = {
   contactWebsite: 'https://keiyoushi.github.io',
   signingKey: '9add655a78e96c4ec7a53ef89dccb557cb5d767489fac5e785d671a5a75d4da2',
 };
-async function convertFromKotatsu(buf, opts, log) {
-  const entries = await zipRead(buf);
-  log(`zip sections: ${entries.map(e => e.name).join(', ')}`, 'info');
-  const get = n => { const e = entries.find(x => x.name === n); return e ? jsonParseBig(TD.decode(e.data)) : null; };
-  const favourites = get('favourites') || [], histories = get('history') || [], cats = get('categories') || [];
-  if (!favourites.length && !histories.length) throw new Error('No favourites or history found in this Kotatsu backup.');
-
-  const kei = opts.useKeiyoushi ? await loadKeiyoushi(log).catch(e => { log('Keiyoushi fetch failed (' + e.message + ') — curated map only', 'warn'); return null; }) : null;
-
-  const resolved = new Map(); const misses = new Map();
-  function resolveMihon(parserName) {
+/* Kotatsu parser name -> Mihon source. Curated map via the Keiyoushi index, then the
+   parser's own domains, then its title; falls back to computing an id from the curated
+   name, which is flagged `weak` because it assumes versionId 1 and the caller's language.
+   Extracted from convertFromKotatsu so the merge engine resolves sources identically. */
+function makeMihonResolver(kei, opts) {
+  const resolved = new Map();
+  return function resolveMihon(parserName) {
     if (resolved.has(parserName)) return resolved.get(parserName);
     let out = null;
     const mihonName = CURATED_K2M[parserName ? parserName.toUpperCase() : ''];
@@ -639,7 +744,34 @@ async function convertFromKotatsu(buf, opts, log) {
     if (!out && mihonName) out = { id: mihonSourceId(mihonName, opts.lang || 'en', 1), name: mihonName, weak: true };
     resolved.set(parserName, out);
     return out;
-  }
+  };
+}
+
+/* Read a Kotatsu zip into its JSON sections, keeping the untouched entries around
+   so a Kotatsu -> Kotatsu merge can work on them directly instead of round-tripping
+   through the Mihon-shaped model, which has no room for tags, rating, nsfw,
+   alt_title or bookmark scroll/percent. */
+async function readKotatsu(buf) {
+  const entries = await zipRead(buf);
+  const get = n => { const e = entries.find(x => x.name === n); return e ? jsonParseBig(TD.decode(e.data)) : null; };
+  return {
+    entries,
+    names: entries.map(e => e.name),
+    favourites: get('favourites') || [], history: get('history') || [],
+    categories: get('categories') || [], bookmarks: get('bookmarks') || [],
+  };
+}
+
+async function convertFromKotatsu(buf, opts, log) {
+  const sec = await readKotatsu(buf);
+  log(`zip sections: ${sec.names.join(', ')}`, 'info');
+  const favourites = sec.favourites, histories = sec.history, cats = sec.categories;
+  if (!favourites.length && !histories.length) throw new Error('No favourites or history found in this Kotatsu backup.');
+
+  const kei = opts.useKeiyoushi ? await loadKeiyoushi(log).catch(e => { log('Keiyoushi fetch failed (' + e.message + ') — curated map only', 'warn'); return null; }) : null;
+
+  const misses = new Map();
+  const resolveMihon = makeMihonResolver(kei, opts);
 
   const byManga = new Map();
   const take = km => {
@@ -721,6 +853,558 @@ async function repackKotatsu(buf, log) {
   log(`repacking ${entries.length} sections: ${entries.map(e => e.name).join(', ')}`, 'info');
   log('Kotatsu and Usagi share a backup format — contents pass through unchanged', 'info');
   return zipWrite(entries.map(e => ({ name: e.name, data: e.data })));
+}
+
+/* ============================================================
+   Merge engine — N backups from N devices into one target format
+   ============================================================ */
+
+/* Entry matching. Tier 1 is the only exact one; the looser tiers exist for
+   cross-family merges, where a Kotatsu entry's source id has been *derived* rather
+   than read, and its url shape need not match the Mihon one for the same site.
+   Title matching is only ever allowed within one already-agreed source id — matching
+   on title alone across sources is how you silently merge two different series. */
+const normUrl = u => String(u || '').replace(/^https?:\/\//i, '').replace(/^[^/]*/, '').replace(/\/+$/, '').toLowerCase();
+const normTitle = t => String(t || '').toLowerCase().replace(/[^a-z0-9]/g, '');
+const SEP = '';
+const keyExact = e => `${e.source}${SEP}${e.url || ''}`;
+const keyUrl = e => `${e.source}${SEP}~${normUrl(e.url)}`;
+const keyTitle = e => `${e.source}${SEP}#${normTitle(e.title)}`;
+
+const isBlank = v => v === undefined || v === null || v === '';
+const maxB = (a, b) => (a === undefined ? b : b === undefined ? a : (BigInt(a) > BigInt(b) ? a : b));
+const minPosB = (a, b) => {
+  if (a === undefined || BigInt(a) <= 0n) return b === undefined ? a : b;
+  if (b === undefined || BigInt(b) <= 0n) return a;
+  return BigInt(a) < BigInt(b) ? a : b;
+};
+const orBool = (a, b) => (a === undefined && b === undefined ? undefined : !!a || !!b);
+const maxN = (a, b) => (a === undefined ? b : b === undefined ? a : Math.max(a, b));
+const sumB = (a, b) => (a === undefined ? b : b === undefined ? a : BigInt(a) + BigInt(b));
+
+/* Chapter/episode identity, loosest last. Chapter numbers are float32 on the wire,
+   so they are compared on a fixed grid rather than with ===. */
+const chapKeys = c => {
+  const k = [];
+  if (!isBlank(c.url)) { k.push('u' + c.url); k.push('n' + normUrl(c.url)); }
+  if (c.chapterNumber !== undefined) k.push('c' + (c.scanlator || '') + '@' + Math.round(c.chapterNumber * 1e4));
+  return k;
+};
+
+function mergeChapterInto(a, b) {
+  if (isBlank(a.name)) a.name = b.name;
+  if (isBlank(a.scanlator)) a.scanlator = b.scanlator;
+  if (isBlank(a.url)) a.url = b.url;
+  if (a.chapterNumber === undefined) a.chapterNumber = b.chapterNumber;
+  a.read = orBool(a.read, b.read);
+  a.bookmark = orBool(a.bookmark, b.bookmark);
+  a.fillermark = orBool(a.fillermark, b.fillermark);
+  a.lastPageRead = maxN(a.lastPageRead, b.lastPageRead);   /* field 6 is lastSecondSeen for episodes */
+  a.totalSeconds = maxB(a.totalSeconds, b.totalSeconds);
+  a.dateFetch = minPosB(a.dateFetch, b.dateFetch);
+  if (a.dateUpload === undefined) a.dateUpload = b.dateUpload;
+  a.lastModifiedAt = maxB(a.lastModifiedAt, b.lastModifiedAt);
+  a.version = maxB(a.version, b.version);
+  if (!a._raw && b._raw) a._raw = b._raw;
+}
+
+/* Union two chapter lists. sourceOrder is the *source site's* listing order and is
+   meaningless across devices, so it is never recomputed from chapter numbers — doing
+   that inverts the ordering for every site that lists newest first. Chapters only one
+   device knew about are appended past the highest existing sourceOrder; an in-app
+   library refresh restores the site's real ordering. */
+function mergeChapters(a, b, stats) {
+  if (!b.chapters.length) return;
+  if (!a.chapters.length) { a.chapters = b.chapters; return; }
+  const idx = new Map();
+  for (const c of a.chapters) for (const k of chapKeys(c)) if (!idx.has(k)) idx.set(k, c);
+  let maxOrder = -1;
+  for (const c of a.chapters) if (typeof c.sourceOrder === 'number' && c.sourceOrder > maxOrder) maxOrder = c.sourceOrder;
+  for (const c of b.chapters) {
+    let hit = null;
+    for (const k of chapKeys(c)) { const h = idx.get(k); if (h) { hit = h; break; } }
+    if (hit) { mergeChapterInto(hit, c); stats.chapMerged++; }
+    else {
+      const copy = { ...c };
+      if (copy.sourceOrder !== undefined) copy.sourceOrder = ++maxOrder;
+      a.chapters.push(copy);
+      for (const k of chapKeys(copy)) if (!idx.has(k)) idx.set(k, copy);
+      stats.chapAdded++;
+    }
+  }
+}
+
+function mergeHistory(a, b) {
+  if (!b.history.length) return;
+  if (!a.history.length) { a.history = b.history; return; }
+  const idx = new Map();
+  for (const h of a.history) idx.set(normUrl(h.url), h);
+  for (const h of b.history) {
+    const hit = idx.get(normUrl(h.url));
+    if (hit) {
+      hit.lastRead = maxB(hit.lastRead, h.lastRead);
+      hit.readDuration = sumB(hit.readDuration, h.readDuration);
+    } else { a.history.push(h); idx.set(normUrl(h.url), h); }
+  }
+}
+
+/* `a` is the higher-priority entry (from a file the user placed earlier in the list)
+   and keeps every field it actually has; `b` fills gaps and contributes progress.
+   Read state is a union in both directions on purpose: a chapter read on any device
+   is read. */
+function mergeEntryInto(a, b, stats) {
+  for (const k of ['url', 'title', 'artist', 'author', 'description', 'thumbnailUrl']) {
+    if (isBlank(a[k]) && !isBlank(b[k])) a[k] = b[k];
+  }
+  if (a.status === undefined || a.status === 0) a.status = b.status;
+  if (!a.genre.length && b.genre.length) a.genre = b.genre;
+  a.favorite = orBool(a.favorite, b.favorite);
+  a.dateAdded = minPosB(a.dateAdded, b.dateAdded);
+  a.lastModifiedAt = maxB(a.lastModifiedAt, b.lastModifiedAt);
+  a.favoriteModifiedAt = maxB(a.favoriteModifiedAt, b.favoriteModifiedAt);
+  a.version = maxB(a.version, b.version);
+  for (const n of b._cats) a._cats.add(n);
+  if (!a._raw && b._raw) a._raw = b._raw;
+  mergeChapters(a, b, stats);
+  mergeHistory(a, b);
+}
+
+/* Merge one kind (manga or anime) across N already-normalised libraries.
+   `libs` is in priority order: index 0 wins every metadata conflict. */
+function mergeKind(libs, kindKey, log) {
+  const out = [];
+  const exact = new Map(), byUrl = new Map(), byTitle = new Map();
+  const seasonOwner = new Map();
+  const stats = { in: 0, merged: 0, chapMerged: 0, chapAdded: 0, byUrlHits: 0, byTitleHits: 0, noSource: 0 };
+
+  for (const lib of libs) {
+    for (const e of lib[kindKey]) {
+      stats.in++;
+      if (e.source === undefined) { stats.noSource++; continue; }
+      let hit = exact.get(keyExact(e));
+      if (!hit) { hit = byUrl.get(keyUrl(e)); if (hit) stats.byUrlHits++; }
+      /* Title fallback is reserved for entries whose source id was derived rather
+         than read out of a backup — i.e. anything that came from a Kotatsu zip. */
+      if (!hit && e._derivedSource) { hit = byTitle.get(keyTitle(e)); if (hit) stats.byTitleHits++; }
+      if (hit) {
+        mergeEntryInto(hit, e, stats);
+        stats.merged++;
+        if (e.seasonId !== undefined) seasonOwner.set(e._ns + ':' + e.seasonId, hit);
+        continue;
+      }
+      out.push(e);
+      exact.set(keyExact(e), e);
+      if (!byUrl.has(keyUrl(e))) byUrl.set(keyUrl(e), e);
+      if (!byTitle.has(keyTitle(e))) byTitle.set(keyTitle(e), e);
+      if (e.seasonId !== undefined) seasonOwner.set(e._ns + ':' + e.seasonId, e);
+    }
+  }
+  if (stats.noSource) log(`${stats.noSource} ${kindKey} skipped — no source id, so nothing to match or restore against`, 'warn');
+  if (stats.byUrlHits) log(`${stats.byUrlHits} ${kindKey} matched on a normalised url rather than an exact one`, 'info');
+  if (stats.byTitleHits) log(`${stats.byTitleHits} ${kindKey} matched on title within the same source — verify these after restoring`, 'warn');
+  return { entries: out, seasonOwner, stats };
+}
+
+/* Season ids (BackupAnime 502 parentId / 503 id) are device-local row ids. Unioning
+   two devices' anime would otherwise let device B's id collide with device A's and
+   silently re-parent a season under the wrong show — the same shape of bug as joining
+   categories on id instead of order (AGENTS.md §8). Every id is renumbered from
+   scratch here, and a parent that did not survive the merge is dropped rather than
+   left pointing at whatever now holds that number. */
+function renumberSeasons(entries, seasonOwner, log) {
+  let next = 1n, orphan = 0;
+  for (const e of entries) if (e.seasonId !== undefined) e._freshSeasonId = next++;
+  for (const e of entries) {
+    if (e.seasonParentId === undefined) continue;
+    const owner = seasonOwner.get(e._ns + ':' + e.seasonParentId);
+    if (owner && owner._freshSeasonId !== undefined) e._freshParentId = owner._freshSeasonId;
+    else orphan++;
+  }
+  for (const e of entries) {
+    if (e.seasonId !== undefined) e.seasonId = e._freshSeasonId;
+    if (e.seasonParentId !== undefined) e.seasonParentId = e._freshParentId;
+  }
+  if (next > 1n) log(`renumbered ${next - 1n} season ids so entries from different devices cannot collide`, 'info');
+  if (orphan) log(`${orphan} season links dropped — their parent entry is not in the merge`, 'warn');
+}
+
+/* Categories merge by name, because that is what Mihon's restorer matches on. Two
+   categories differing only in case are distinct there, so they stay distinct here
+   unless the caller opts in. Order is reassigned from array position — never carried
+   across — and field 17 on every entry is rewritten from it. */
+function mergeCategories(libs, listKey, caseFold, log) {
+  const out = [], seen = new Map();
+  const key = n => (caseFold ? String(n).toLowerCase() : String(n));
+  for (const lib of libs) {
+    for (const c of lib[listKey]) {
+      const name = c.name || 'Category';
+      const k = key(name);
+      if (seen.has(k)) {
+        const prev = seen.get(k);
+        if (prev.flags === undefined && c.flags !== undefined) prev.flags = c.flags;
+        continue;
+      }
+      const rec = { name, flags: c.flags, _raw: c._raw };
+      seen.set(k, rec); out.push(rec);
+    }
+  }
+  out.forEach((c, i) => { c.order = i; c.id = i + 1; });
+  if (out.length) log(`${out.length} ${listKey === 'categories' ? '' : 'anime '}categories after merge: ${out.map(c => c.name).join(', ')}`, 'info');
+  return out;
+}
+
+/* ---------- ingestion ---------- */
+
+/* Category membership is carried as a set of *names* through the whole merge. Field
+   17 holds each category's order — its position in that backup's own list — and
+   those positions mean different things in different files, so they are resolved to
+   names on the way in and back to fresh positions on the way out (AGENTS.md §8). */
+function libFromBackup(bk, ns) {
+  const orderToName = new Map(), aOrderToName = new Map();
+  for (const c of bk.categories) if (!orderToName.has(c.order || 0)) orderToName.set(c.order || 0, c.name || 'Category');
+  for (const c of bk.animeCategories) if (!aOrderToName.has(c.order || 0)) aOrderToName.set(c.order || 0, c.name || 'Category');
+  const tag = (list, map, isAnime) => {
+    for (const e of list) {
+      e._ns = ns;
+      e._cats = new Set(e.categories.map(o => map.get(o)).filter(Boolean));
+      e._anime = !!isAnime;
+      e._fromAnimeFile = !!bk.animeLayout;
+    }
+    return list;
+  };
+  return {
+    manga: tag(bk.manga, orderToName, false),
+    anime: tag(bk.anime, aOrderToName, true),
+    categories: bk.categories, animeCategories: bk.animeCategories,
+    sources: bk.sources, animeSources: bk.animeSources,
+    rootRaw: bk.rootRaw, animeLayout: bk.animeLayout,
+  };
+}
+
+/* A Kotatsu zip rendered into the Mihon-shaped model. Source ids are *derived* here
+   (see makeMihonResolver), which is why every entry is flagged `_derivedSource`: the
+   merge engine may fall back to title matching for these, and only these. Kotatsu
+   stores no chapter lists, so these entries never contribute chapters — and
+   mergeChapters is written so an empty list can never clear a populated one. */
+function libFromKotatsu(sec, ns, opts, kei, log) {
+  const resolveMihon = makeMihonResolver(kei, opts);
+  const byManga = new Map(), misses = new Map();
+  const take = km => {
+    const k = String(km.id);
+    if (!byManga.has(k)) byManga.set(k, { km, cats: new Set(), lastRead: 0n, dateAdded: 0n });
+    return byManga.get(k);
+  };
+  for (const f of sec.favourites) { const e = take(f.manga || {}); if (f.category_id != null) e.cats.add(bigOf(f.category_id)); if (f.created_at) e.dateAdded = bigOf(f.created_at); }
+  for (const h of sec.history) { const e = take(h.manga || {}); const t = bigOf(h.updated_at); if (t > e.lastRead) e.lastRead = t; if (!e.dateAdded && h.created_at) e.dateAdded = bigOf(h.created_at); }
+
+  const sortedCats = [...sec.categories].sort((a, b) => Number(bigOf(a.sort_key) - bigOf(b.sort_key)));
+  const catIdToName = new Map();
+  for (const c of sortedCats) catIdToName.set(String(bigOf(c.category_id)), c.title || 'Category');
+
+  const manga = [], sources = [], usedSources = new Map();
+  let dropped = 0, weak = 0;
+  for (const { km, cats, lastRead, dateAdded } of byManga.values()) {
+    const hit = resolveMihon(km.source || '');
+    if (!hit) {
+      misses.set(km.source || '?', (misses.get(km.source || '?') || 0) + 1);
+      if (!opts.keepUnmatched) { dropped++; continue; }
+    }
+    const sid = hit ? hit.id : mihonSourceId(km.source || 'unknown', opts.lang || 'en', 1);
+    const sname = hit ? hit.name : (km.source || 'unknown');
+    if (hit && hit.weak) weak++;
+    usedSources.set(sid.toString(), sname);
+    manga.push({
+      source: sid, url: km.url || '', title: km.title || '',
+      author: km.author || undefined, thumbnailUrl: km.cover_url || undefined,
+      genre: [], chapters: [], categories: [], history: [],
+      dateAdded: dateAdded || 0n, favorite: true, lastModifiedAt: lastRead || dateAdded || 0n, version: 1n,
+      _ns: ns, _anime: false, _derivedSource: true, _fromAnimeFile: false,
+      _cats: new Set([...cats].map(c => catIdToName.get(String(c))).filter(Boolean)),
+    });
+  }
+  for (const [id, name] of usedSources) sources.push({ name, sourceId: BigInt(id) });
+  if (weak) log(`${weak} Kotatsu sources resolved from the curated map only — verify them after import`, 'warn');
+  if (misses.size) log(`${dropped} Kotatsu entries skipped — no Mihon source for: ${[...misses.keys()].slice(0, 8).join(', ')}${misses.size > 8 ? ` (+${misses.size - 8} more)` : ''}`, 'warn');
+  return {
+    manga, anime: [],
+    categories: sortedCats.map((c, i) => ({ name: c.title || 'Category', order: i, id: i + 1 })),
+    animeCategories: [], sources, animeSources: [], rootRaw: new Map(), animeLayout: null,
+  };
+}
+
+/* Identify a dropped file without asking the user to name its app: the format, and
+   for protobuf the anime layout, are both readable from the bytes. */
+async function inspectBackup(bytes, name) {
+  if (isZip(bytes)) {
+    const sec = await readKotatsu(bytes);
+    const ids = new Set(sec.favourites.map(f => String((f.manga || {}).id)));
+    for (const h of sec.history) ids.add(String((h.manga || {}).id));
+    return { name, fam: 'kotatsu', sec, manga: ids.size, anime: 0, animeLayout: null, label: 'Kotatsu / Usagi' };
+  }
+  let data = bytes;
+  if (isGzip(bytes)) data = await gunzip(bytes);
+  const bk = decodeBackup(data);
+  if (!bk.manga.length && !bk.anime.length) throw new Error(`No manga or anime found in ${name} — is it a backup file?`);
+  const label = bk.animeLayout === 'x5'
+    ? (bk.manga.length ? 'Aniyomi / Animetail' : 'Anikku (501–506 layout)')
+    : bk.animeLayout === 'low' ? 'Anikku / legacy Aniyomi' : 'Mihon family';
+  return { name, fam: 'tachi', bk, manga: bk.manga.length, anime: bk.anime.length, animeLayout: bk.animeLayout, label };
+}
+
+/* ---------- output ---------- */
+
+/* Root fields the merged output may contain, and the assertion that it does. Getting
+   this wrong is not cosmetic: Aniyomi picks between its current and legacy
+   serializers on `isLegacy && backupAnimeSources(103).isNotEmpty()`, so a file mixing
+   the two anime layouts is decoded with the wrong serializer and read as garbage
+   rather than rejected. */
+function allowedRoots(target, layout) {
+  const set = new Set(APPS[target].root || []);
+  if (layout) {
+    const L = ANIME_LAYOUT[layout];
+    for (const k of ['anime', 'cats', 'sources']) set.add(L[k]);
+    if (layout === 'x5') set.add(500);
+  }
+  return set;
+}
+function verifyTachiRoots(buf, target, layout) {
+  const allow = allowedRoots(target, layout);
+  const seen = new Set();
+  for (const { f } of pbFields(buf)) seen.add(f);
+  const bad = [...seen].filter(f => !allow.has(f));
+  if (bad.length) throw new Error(`internal: merged output has root fields ${bad.join(', ')} that ${APPS[target].label} does not declare`);
+  if (layout) {
+    const other = layout === 'x5' ? ANIME_LAYOUT.low : ANIME_LAYOUT.x5;
+    const leak = [other.anime, other.cats, other.sources].filter(f => seen.has(f) && !allow.has(f));
+    if (leak.length) throw new Error(`internal: merged output mixes anime layouts (stray fields ${leak.join(', ')})`);
+  }
+  return seen;
+}
+
+/* Mihon, Komikku and TachiyomiSY declare field 106 as BackupExtensionStore. Aniyomi
+   declares the same number as BackupExtensionRepos, and legacy Aniyomi as
+   BackupExtensions — three incompatible messages on one number (AGENTS.md §2). A
+   merge has no single "from" app to reason from, so 106 is never carried across; the
+   Keiyoushi store is emitted fresh for the forks whose shape is confirmed. */
+const EXT_STORE_APPS = new Set(['mihon', 'komikku', 'sy']);
+
+function buildMergedTachi(merged, target, opts, log) {
+  const app = APPS[target];
+  const root = new PW();
+  const rootSet = new Set(app.root || []);
+  const wantManga = rootSet.has(1) && app.kinds.includes('manga');
+  const wantAnime = !!app.anime && app.kinds.includes('anime');
+  const layout = wantAnime ? (target === 'anikku' && opts.anikkuModern ? 'x5' : app.anime) : null;
+
+  if (!wantManga && merged.manga.length) log(`skipped ${merged.manga.length} manga — ${app.label} does not store manga`, 'warn');
+  if (!wantAnime && merged.anime.length) log(`skipped ${merged.anime.length} anime — ${app.label} does not store anime`, 'warn');
+  if ((!wantManga || !merged.manga.length) && (!wantAnime || !merged.anime.length)) {
+    throw new Error(`Nothing left to write: ${app.label} stores ${app.kinds.join(' + ')}, and the merged inputs have none of that.`);
+  }
+
+  /* Aniyomi's current Backup declares isLegacy at 500 and Anikku's marks it
+     @Required — an x5 file without it fails to deserialize on Anikku outright. */
+  if (layout === 'x5') root.bool(500, false);
+
+  if (wantManga) {
+    const catOrder = new Map(merged.categories.map((c, i) => [c.name, i]));
+    let highStripped = 0;
+    for (const m of merged.manga) {
+      m.categories = [...m._cats].map(n => catOrder.get(n)).filter(o => o !== undefined).sort((a, b) => a - b);
+      const dropHigh = !app.kinds.includes('anime') && m._fromAnimeFile;
+      if (dropHigh && rawDropped(m, 500).length) highStripped++;
+      root.msg(1, encodeManga(m, false, dropHigh));
+    }
+    log(`wrote ${merged.manga.length} manga`, 'success');
+    if (highStripped) log(`stripped fork-specific fields ≥500 inside ${highStripped} manga`, 'warn');
+    if (rootSet.has(2)) for (const c of merged.categories) root.msg(2, encodeCategory(c));
+    if (rootSet.has(101)) for (const [id, name] of merged.sources) root.msg(101, encodeSource({ name, sourceId: BigInt(id) }));
+    else if (merged.sources.size) log(`${app.label} has no source list — sources are not carried`, 'warn');
+  }
+
+  if (wantAnime && merged.anime.length) {
+    const L = ANIME_LAYOUT[layout];
+    const catOrder = new Map(merged.animeCategories.map((c, i) => [c.name, i]));
+    const dropHigh = layout === 'low';
+    let seasonsLost = 0;
+    for (const a of merged.anime) {
+      a.categories = [...a._cats].map(n => catOrder.get(n)).filter(o => o !== undefined).sort((x, y) => x - y);
+      if (dropHigh && (a.seasonId !== undefined || rawDropped(a, 500).length)) seasonsLost++;
+      root.msg(L.anime, encodeManga(a, true, dropHigh));
+    }
+    log(`wrote ${merged.anime.length} anime in the ${layout === 'x5' ? '501–506' : '3/4/103'} layout`, 'success');
+    if (seasonsLost) log(`${seasonsLost} anime lost season links and other fields ≥500 — ${app.label}'s layout has no room for them`, 'warn');
+    for (const c of merged.animeCategories) root.msg(L.cats, encodeCategory(c));
+    for (const [id, name] of merged.animeSources) root.msg(L.sources, encodeSource({ name, sourceId: BigInt(id) }));
+  }
+
+  /* Preferences are opaque key/value blobs with no merge semantics, so they come
+     from the highest-priority input that has them rather than being interleaved. */
+  for (const f of [104, 105]) {
+    if (!rootSet.has(f)) continue;
+    const src = merged.rootRaw.get(f);
+    if (!src) continue;
+    for (const slice of src.slices) root.raw(slice);
+    log(`carried ${ROOT_NAMES[f]} from ${src.from}`, 'info');
+    if (src.others) log(`${ROOT_NAMES[f]} from ${src.others} other backup${src.others > 1 ? 's' : ''} discarded — settings cannot be merged`, 'warn');
+  }
+  if (rootSet.has(106) && EXT_STORE_APPS.has(target)) {
+    const store = new PW();
+    store.str(1, KEIYOUSHI_STORE.indexUrl).str(2, KEIYOUSHI_STORE.name).str(3, KEIYOUSHI_STORE.badgeLabel)
+         .str(4, KEIYOUSHI_STORE.contactWebsite).str(5, KEIYOUSHI_STORE.signingKey).bool(7, true);
+    root.msg(106, store.done());
+    log('added the Keiyoushi extension store so extensions install without trust prompts', 'info');
+  } else if (merged.hadExtField) {
+    log('extension repo lists are not carried through a merge — field 106 is a different message in each fork', 'warn');
+  }
+
+  const out = root.done();
+  verifyTachiRoots(out, target, layout);
+  return out;
+}
+
+/* Kotatsu into Kotatsu keeps the JSON sections rather than going through the
+   Mihon-shaped model, which has no room for tags, rating, nsfw, alt_title or a
+   bookmark's scroll/percent. Entries are keyed on Kotatsu's own manga id, a hash of
+   (parser name, url) and therefore already stable across devices. */
+async function mergeKotatsuSections(inputs, opts, log) {
+  const favByKey = new Map(), histById = new Map(), catByTitle = new Map(), bmById = new Map();
+  let nextCat = CAT_OFFSET;
+  const catIdRemap = inputs.map(inp => {
+    const map = new Map();
+    for (const c of inp.sec.categories) {
+      const title = c.title || 'Category';
+      const k = opts.caseFoldCats ? title.toLowerCase() : title;
+      if (!catByTitle.has(k)) catByTitle.set(k, { ...c, category_id: nextCat++, title, sort_key: catByTitle.size });
+      map.set(String(bigOf(c.category_id)), catByTitle.get(k).category_id);
+    }
+    return map;
+  });
+  inputs.forEach((inp, i) => {
+    const map = catIdRemap[i];
+    for (const f of inp.sec.favourites) {
+      /* A favourite can point at a category the zip never declared. Keeping its raw
+         id risks colliding with one this merge just handed out, so it falls back to
+         Kotatsu's always-present default category instead. */
+      const cid = map.get(String(bigOf(f.category_id)));
+      const resolved = cid === undefined ? CAT_DEFAULT : cid;
+      const k = bigOf((f.manga || {}).id) + '|' + resolved;
+      if (favByKey.has(k)) continue;
+      favByKey.set(k, { ...f, category_id: resolved });
+    }
+    for (const h of inp.sec.history) {
+      const id = String(bigOf((h.manga || {}).id));
+      const prev = histById.get(id);
+      if (!prev) { histById.set(id, { ...h }); continue; }
+      const created = minPosB(bigOf(prev.created_at), bigOf(h.created_at));
+      if (bigOf(h.updated_at) > bigOf(prev.updated_at)) histById.set(id, { ...h, created_at: created });
+      else prev.created_at = created;
+    }
+    for (const b of inp.sec.bookmarks) {
+      const id = String(bigOf((b.manga || {}).id));
+      const prev = bmById.get(id);
+      if (!prev) { bmById.set(id, { ...b, bookmarks: [...(b.bookmarks || [])] }); continue; }
+      const seen = new Set(prev.bookmarks.map(x => String(bigOf(x.chapter_id)) + '/' + x.page));
+      for (const x of (b.bookmarks || [])) {
+        const k = String(bigOf(x.chapter_id)) + '/' + x.page;
+        if (!seen.has(k)) { prev.bookmarks.push(x); seen.add(k); }
+      }
+    }
+  });
+  const categories = [...catByTitle.values()];
+  const favourites = [...favByKey.values()], history = [...histById.values()], bookmarks = [...bmById.values()];
+  if (!favourites.length && !history.length) throw new Error('Nothing to merge — no favourites or history in any input.');
+  log(`merged ${favourites.length} favourites, ${history.length} history entries, ${categories.length} categories, ${bookmarks.length} bookmark sets`, 'success');
+  const files = [];
+  const add = (name, arr) => { if (arr.length) files.push({ name, data: TE.encode(jsonDump(arr)) }); };
+  add('history', history); add('categories', categories); add('favourites', favourites); add('bookmarks', bookmarks);
+  files.push({ name: 'index', data: TE.encode(jsonDump([{ app_id: 'dev.7he.tachibk', app_version: 1, created_at: Date.now() }])) });
+  return zipWrite(files);
+}
+
+/* ---------- merge driver ---------- */
+
+/* `inputs` are inspectBackup() results in priority order — the first file wins every
+   metadata conflict. Everything else (read state, bookmarks, category membership,
+   chapter lists) is a union, so no device's progress is lost to another's. */
+async function runMerge(inputs, target, opts, log) {
+  if (!inputs.length) throw new Error('Add at least one backup to merge.');
+  const app = APPS[target];
+  if (!app) throw new Error('Unknown target app.');
+  log(`merging ${inputs.length} backup${inputs.length > 1 ? 's' : ''} into ${app.label}`, 'info');
+  inputs.forEach((i, n) => log(`#${n + 1} ${i.name} — ${i.label}, ${i.manga} manga, ${i.anime} anime`, 'info'));
+
+  if (app.fam === 'kotatsu' && inputs.every(i => i.fam === 'kotatsu')) return mergeKotatsuSections(inputs, opts, log);
+  if (app.fam === 'kotatsu') log('some inputs are not Kotatsu backups — merging through the shared model', 'info');
+
+  const needKei = opts.useKeiyoushi && (app.fam === 'kotatsu' || inputs.some(i => i.fam === 'kotatsu'));
+  const kei = needKei
+    ? await loadKeiyoushi(log).catch(e => { log('Keiyoushi fetch failed (' + e.message + ') — offline matching only', 'warn'); return null; })
+    : null;
+
+  const libs = inputs.map((inp, ns) => inp.fam === 'kotatsu'
+    ? libFromKotatsu(inp.sec, ns, opts, kei, log)
+    : libFromBackup(inp.bk, ns));
+
+  const mangaMerge = mergeKind(libs, 'manga', log);
+  const animeMerge = mergeKind(libs, 'anime', log);
+  renumberSeasons(animeMerge.entries, animeMerge.seasonOwner, log);
+
+  const dupM = mangaMerge.stats.in - mangaMerge.entries.length;
+  const dupA = animeMerge.stats.in - animeMerge.entries.length;
+  log(`manga: ${mangaMerge.stats.in} in, ${mangaMerge.entries.length} out (${dupM} duplicate${dupM === 1 ? '' : 's'} merged)`, 'info');
+  if (animeMerge.stats.in) log(`anime: ${animeMerge.stats.in} in, ${animeMerge.entries.length} out (${dupA} duplicate${dupA === 1 ? '' : 's'} merged)`, 'info');
+  if (mangaMerge.stats.chapMerged || mangaMerge.stats.chapAdded) log(`chapters: ${mangaMerge.stats.chapMerged} reconciled, ${mangaMerge.stats.chapAdded} added from another device`, 'info');
+  if (animeMerge.stats.chapMerged || animeMerge.stats.chapAdded) log(`episodes: ${animeMerge.stats.chapMerged} reconciled, ${animeMerge.stats.chapAdded} added from another device`, 'info');
+  if (mangaMerge.stats.chapAdded || animeMerge.stats.chapAdded) log('refresh your library in-app afterwards to restore each source’s own chapter ordering', 'warn');
+
+  const sources = new Map(), animeSources = new Map();
+  let hadExtField = false;
+  const takeSrc = (map, s) => {
+    if (s.sourceId === undefined) return;
+    const k = s.sourceId.toString();
+    if (!map.get(k)) map.set(k, s.name || '');
+  };
+  for (const lib of libs) {
+    for (const s of lib.sources) takeSrc(sources, s);
+    for (const s of lib.animeSources) takeSrc(animeSources, s);
+    if (lib.rootRaw && (lib.rootRaw.has(106) || lib.rootRaw.has(108))) hadExtField = true;
+  }
+
+  const rootRaw = new Map();
+  for (const f of [104, 105]) {
+    let chosen = null, others = 0;
+    libs.forEach((lib, i) => {
+      const slices = lib.rootRaw && lib.rootRaw.get(f);
+      if (!slices) return;
+      if (chosen) others++; else chosen = { slices, from: inputs[i].name };
+    });
+    if (chosen) rootRaw.set(f, { ...chosen, others });
+  }
+
+  const merged = {
+    manga: mangaMerge.entries, anime: animeMerge.entries,
+    categories: mergeCategories(libs, 'categories', !!opts.caseFoldCats, log),
+    animeCategories: mergeCategories(libs, 'animeCategories', !!opts.caseFoldCats, log),
+    sources, animeSources, rootRaw, hadExtField,
+  };
+
+  if (app.fam === 'kotatsu') {
+    if (merged.anime.length) log(`skipped ${merged.anime.length} anime — ${app.label} does not store anime`, 'warn');
+    const catOrder = new Map(merged.categories.map((c, i) => [c.name, i]));
+    const bk = {
+      manga: merged.manga.map(m => ({ ...m, categories: [...m._cats].map(n => catOrder.get(n)).filter(o => o !== undefined) })),
+      categories: merged.categories,
+      sources: [...merged.sources].map(([id, name]) => ({ name, sourceId: BigInt(id) })),
+    };
+    return buildKotatsu(bk, opts, kei, log);
+  }
+
+  const out = buildMergedTachi(merged, target, opts, log);
+  log(`protobuf: ${fmtBytes(out.length)} — compressing`, 'info');
+  const gz = await gzip(out);
+  log(`output: ${fmtBytes(gz.length)}`, 'success');
+  return gz;
 }
 
 /* ---------- driver ---------- */

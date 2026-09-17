@@ -255,7 +255,31 @@
     .hint-mobile  { display: none; }
   }
 
-  #file-input { display: none; }
+  #file-input, #merge-file-input { display: none; }
+
+  /* Mode switch + merge pane */
+  .mode-seg { margin-bottom: 14px; }
+  .pane.hidden, .btn-convert.hidden { display: none; }
+
+  .merge-list { display: grid; gap: 6px; margin-top: 10px; }
+  .merge-item {
+    display: flex;
+    align-items: center;
+    gap: 9px;
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    padding: 9px 11px;
+  }
+  .merge-item.bad { border-color: var(--error); }
+  .merge-rank { font-size: 11px; color: var(--accent); flex-shrink: 0; min-width: 14px; }
+  .merge-move {
+    background: none; border: none; color: var(--muted); cursor: pointer;
+    font-family: inherit; font-size: 12px; line-height: 1; padding: 4px 3px; flex-shrink: 0;
+    -webkit-tap-highlight-color: transparent;
+  }
+  .merge-move:hover:not(:disabled) { color: var(--accent); }
+  .merge-move:disabled { opacity: 0.25; cursor: not-allowed; }
 
   /* File info */
   .file-info {
@@ -577,6 +601,12 @@
   </header>
 
   <main>
+    <div class="seg mode-seg" id="mode-seg">
+      <button type="button" data-mode="convert" class="on">Convert one</button>
+      <button type="button" data-mode="merge">Merge several</button>
+    </div>
+
+    <div class="pane" id="convert-pane">
     <div class="route">
       <div class="field-group" style="margin-top:0">
         <label class="field-label" for="from-app">From</label>
@@ -620,6 +650,31 @@
       </div>
       <button class="file-remove" id="file-remove" title="Remove file">✕</button>
     </div>
+    </div>
+
+    <div class="pane hidden" id="merge-pane">
+      <div class="dropzone" id="merge-dropzone" role="button" tabindex="0" aria-label="Add backup files">
+        <span class="drop-icon">🗃</span>
+        <div class="drop-label">
+          <span class="hint-mobile">Tap to add backups</span>
+          <span class="hint-desktop">Drop one or more backups here</span>
+        </div>
+        <div class="drop-hint">
+          <span class="hint-desktop">or click to browse &nbsp;·&nbsp; </span>
+          <span class="ext">any mix of .tachibk and .zip</span>
+        </div>
+      </div>
+      <input type="file" id="merge-file-input" accept=".tachibk,.proto,.gz,.bk,.zip" multiple>
+
+      <div class="merge-list" id="merge-list"></div>
+
+      <div class="field-group">
+        <label class="field-label" for="merge-to">Merge into</label>
+        <select class="field-input" id="merge-to"></select>
+      </div>
+
+      <div class="route-note" id="merge-note"></div>
+    </div>
 
     <div class="opts">
       <label class="opt-row hidden" id="opt-row-keiyoushi">
@@ -648,6 +703,7 @@
     </div>
 
     <button class="btn-convert" id="btn-convert" disabled>Convert Backup</button>
+    <button class="btn-convert hidden" id="btn-merge" disabled>Merge Backups</button>
 
     <div class="log-wrapper" id="log-wrapper">
       <div class="log-header">
@@ -728,6 +784,9 @@
     optLibName: $('opt-libname'), optKeep: $('opt-keep'),
     rowKeiyoushi: $('opt-row-keiyoushi'), rowLang: $('opt-row-lang'),
     rowLibName: $('opt-row-libname'), rowKeep: $('opt-row-keep'),
+    modeSeg: $('mode-seg'), convertPane: $('convert-pane'), mergePane: $('merge-pane'),
+    mergeDrop: $('merge-dropzone'), mergeInput: $('merge-file-input'), mergeList: $('merge-list'),
+    mergeTo: $('merge-to'), mergeNote: $('merge-note'), merge: $('btn-merge'),
   };
 
   const GROUPS = [
@@ -740,6 +799,7 @@
     ['tr', 'Türkçe'], ['ar', 'العربية'], ['ja', '日本語'], ['ko', '한국어'], ['zh-Hans', '简体中文'], ['vi', 'Tiếng Việt'], ['th', 'ไทย']];
 
   let kind = 'anime', selectedFile = null, outputBlob = null, busy = false;
+  let mode = 'convert', mergeFiles = [], mergeSeq = 0;
 
   function fillSelect(sel, chosen) {
     sel.innerHTML = '';
@@ -756,11 +816,13 @@
   }
   fillSelect(els.from, 'aniyomi');
   fillSelect(els.to, 'anikku');
+  fillSelect(els.mergeTo, 'aniyomi');
   for (const [v, l] of LANGS) { const o = document.createElement('option'); o.value = v; o.textContent = l; els.optLang.appendChild(o); }
   const pc = document.getElementById('parser-count');
   if (pc) pc.textContent = KOTATSU_PARSERS.size.toLocaleString();
 
   const from = () => els.from.value, to = () => els.to.value;
+  const target = () => (mode === 'merge' ? els.mergeTo.value : to());
 
   const ROUTE_TEXT = {
     tachi2tachi: () => `Keeps your <b>manga library, categories, sources, settings and extension repos</b>, and drops everything ${APPS[to()].label} can't read. Chapters, read progress and history all survive.`,
@@ -821,6 +883,16 @@
   };
 
   function refresh() {
+    const merging = mode === 'merge';
+    for (const b of els.modeSeg.children) b.classList.toggle('on', b.dataset.mode === mode);
+    els.convertPane.classList.toggle('hidden', merging);
+    els.mergePane.classList.toggle('hidden', !merging);
+    els.convert.classList.toggle('hidden', merging);
+    els.merge.classList.toggle('hidden', !merging);
+    if (merging) refreshMerge(); else refreshConvert();
+  }
+
+  function refreshConvert() {
     const f = from(), t = to();
     const shared = sharedKinds(f, t);
     if (shared.length && !shared.includes(kind)) kind = shared[0];
@@ -869,11 +941,136 @@
     if (selectedFile) suggestName();
   }
 
+  /* ---------- merge mode ---------- */
+
+  const MERGE_MAPPING = t => {
+    const app = APPS[t], rows = [];
+    const L = app.anime ? ANIME_LAYOUT[app.anime] : null;
+    rows.push(app.kinds.includes('manga')
+      ? ['manga libraries', 'every input', 'merged on source + url', app.fam === 'kotatsu' ? 'favourites' : '1', 0]
+      : ['manga libraries', 'every input', `not stored by ${app.label}`, '', 1]);
+    rows.push(app.kinds.includes('anime')
+      ? ['anime libraries', 'every input', 'merged on source + url', String(L.anime), 0]
+      : ['anime libraries', 'every input', `not stored by ${app.label}`, '', 1]);
+    rows.push(['chapters + episodes', '', 'unioned', '', 0]);
+    rows.push(['read / seen state', '', 'read on any device', '', 0]);
+    rows.push(['reading position', '', 'furthest of the two', '', 0]);
+    rows.push(['categories', 'by name', 'reindexed from 0', app.fam === 'kotatsu' ? 'categories' : '2', 0]);
+    rows.push(['metadata conflicts', '', 'first file in the list wins', '', 0]);
+    rows.push(['settings', '', 'from the first file only', app.fam === 'kotatsu' ? '' : '104', app.fam === 'kotatsu' ? 1 : 0]);
+    rows.push(['extension repo lists', '', 'not carried', '', 1]);
+    return rows;
+  };
+
+  function refreshMerge() {
+    const t = els.mergeTo.value, app = APPS[t];
+    const ready = mergeFiles.filter(f => f.state === 'ok');
+    const totalManga = ready.reduce((n, f) => n + f.info.manga, 0);
+    const totalAnime = ready.reduce((n, f) => n + f.info.anime, 0);
+    const anyKotatsu = ready.some(f => f.info.fam === 'kotatsu');
+
+    els.titleFrom.textContent = ready.length ? `${ready.length} backup${ready.length > 1 ? 's' : ''}` : 'Backups';
+    els.titleTo.textContent = app.label;
+    document.title = `Merge backups \u2192 ${app.label} \u00b7 tachibk converter`;
+
+    const kept = [];
+    if (app.kinds.includes('manga')) kept.push(`${totalManga} manga`);
+    if (app.kinds.includes('anime')) kept.push(`${totalAnime} anime`);
+    const lost = [];
+    if (!app.kinds.includes('manga') && totalManga) lost.push(`${totalManga} manga`);
+    if (!app.kinds.includes('anime') && totalAnime) lost.push(`${totalAnime} anime`);
+    els.mergeNote.classList.remove('bad');
+    if (!ready.length) {
+      els.mergeNote.innerHTML = `Add the backups you want to combine \u2014 one per device, in any mix of formats. `
+        + `They are merged into a single <b>${app.label}</b> backup. Order matters: the <b>first file wins</b> any metadata conflict, `
+        + `while read progress, bookmarks and category membership are always unioned.`;
+    } else if (!kept.length || (app.kinds.includes('manga') && !totalManga && !app.kinds.includes('anime'))) {
+      els.mergeNote.classList.add('bad');
+      els.mergeNote.innerHTML = `<b>${app.label} stores ${app.kinds.join(' and ')}, and none of these backups contain any.</b> Pick a different target app.`;
+    } else {
+      els.mergeNote.innerHTML = `Merging <b>${kept.join(' and ')}</b> from ${ready.length} backup${ready.length > 1 ? 's' : ''} into one ${app.label} file. `
+        + `A chapter read on any device counts as read, and reading positions take the furthest of the two.`
+        + (lost.length ? ` <span class="lossy">${lost.join(' and ')} will be dropped \u2014 ${app.label} has nowhere to put them.</span>` : '')
+        + (anyKotatsu && app.fam !== 'kotatsu' ? ` <span class="lossy">Kotatsu backups store no chapter lists</span>, so entries only they know about arrive empty.` : '');
+    }
+
+    const needsMatching = anyKotatsu || app.fam === 'kotatsu';
+    els.rowKeiyoushi.classList.toggle('hidden', !needsMatching);
+    els.rowLang.classList.toggle('hidden', !anyKotatsu);
+    els.rowLibName.classList.toggle('hidden', app.fam !== 'kotatsu');
+    els.rowKeep.classList.toggle('hidden', !anyKotatsu);
+
+    els.mapTitle.textContent = `Merge \u2192 ${app.label}`;
+    els.mapGrid.innerHTML = '';
+    for (const [a, af, b, bf, drop] of MERGE_MAPPING(t)) {
+      const row = document.createElement('div');
+      row.className = 'mapping-row' + (drop ? ' discard' : '');
+      row.innerHTML = `<span class="mapping-from">${a}${af ? ` <span class="mapping-field">${af}</span>` : ''}</span>`
+        + `<span class="mapping-arrow">${drop ? '\u2715' : '\u2192'}</span>`
+        + `<span class="mapping-to">${b}${bf ? ` <span class="mapping-field">${bf}</span>` : ''}</span>`;
+      els.mapGrid.appendChild(row);
+    }
+
+    els.merge.disabled = busy || !ready.length || els.mergeNote.classList.contains('bad');
+    if (ready.length) els.outputName.value = `merged_library_${t}${app.ext}`;
+  }
+
+  function renderMergeList() {
+    els.mergeList.innerHTML = '';
+    mergeFiles.forEach((f, i) => {
+      const row = document.createElement('div');
+      row.className = 'merge-item' + (f.state === 'error' ? ' bad' : '');
+      const detail = f.state === 'reading' ? 'reading\u2026'
+        : f.state === 'error' ? f.msg
+        : `${f.info.label} \u00b7 ${f.info.manga} manga, ${f.info.anime} anime \u00b7 ${fmtBytes(f.size)}`;
+      row.innerHTML = `<span class="merge-rank">#${i + 1}</span>`
+        + `<div class="file-details"><div class="file-name"></div><div class="file-size"></div></div>`
+        + `<button class="merge-move" data-act="up" data-i="${i}" title="Higher priority" aria-label="Move up"${i === 0 ? ' disabled' : ''}>\u25b2</button>`
+        + `<button class="merge-move" data-act="down" data-i="${i}" title="Lower priority" aria-label="Move down"${i === mergeFiles.length - 1 ? ' disabled' : ''}>\u25bc</button>`
+        + `<button class="file-remove" data-act="rm" data-i="${i}" title="Remove" aria-label="Remove">\u2715</button>`;
+      row.querySelector('.file-name').textContent = f.name;
+      row.querySelector('.file-size').textContent = detail;
+      els.mergeList.appendChild(row);
+    });
+  }
+
+  function resetOutput() {
+    outputBlob = null;
+    els.download.classList.remove('visible');
+    els.logWrap.classList.remove('visible');
+    els.logBox.innerHTML = '';
+  }
+
+  async function addMergeFiles(list) {
+    for (const file of list) {
+      const rec = { file, name: file.name, size: file.size, state: 'reading', key: ++mergeSeq };
+      mergeFiles.push(rec);
+      renderMergeList();
+      refresh();
+      try {
+        rec.info = await inspectBackup(new Uint8Array(await file.arrayBuffer()), file.name);
+        rec.state = 'ok';
+      } catch (err) {
+        rec.state = 'error';
+        rec.msg = err && err.message ? err.message : String(err);
+      }
+      renderMergeList();
+      refresh();
+    }
+  }
+
   function suggestName() {
     if (!selectedFile) return;
     const base = selectedFile.name.replace(/\.(tachibk|proto|gz|bk|zip)$/i, '').replace(/_(mihon|kotatsu|komikku|usagi|anikku|aniyomi|animetail|sy|yokai|neko)$/i, '');
     els.outputName.value = `${base}_${to()}${APPS[to()].ext}`;
   }
+
+  const readOpts = () => ({
+    useKeiyoushi: els.optKeiyoushi.checked,
+    lang: els.optLang.value,
+    libraryName: (els.optLibName.value || 'Library').trim(),
+    keepUnmatched: els.optKeep.checked,
+  });
 
   function log(msg, type) {
     const line = document.createElement('span');
@@ -905,6 +1102,71 @@
     refresh();
   }
 
+  els.modeSeg.addEventListener('click', e => {
+    const b = e.target.closest('button');
+    if (!b || b.dataset.mode === mode) return;
+    mode = b.dataset.mode;
+    resetOutput();
+    refresh();
+  });
+
+  els.mergeTo.addEventListener('change', refresh);
+  els.mergeDrop.addEventListener('click', () => els.mergeInput.click());
+  els.mergeDrop.addEventListener('keydown', e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); els.mergeInput.click(); } });
+  els.mergeDrop.addEventListener('dragover', e => { e.preventDefault(); els.mergeDrop.classList.add('drag-over'); });
+  els.mergeDrop.addEventListener('dragleave', e => { if (!els.mergeDrop.contains(e.relatedTarget)) els.mergeDrop.classList.remove('drag-over'); });
+  els.mergeDrop.addEventListener('drop', e => {
+    e.preventDefault(); els.mergeDrop.classList.remove('drag-over');
+    if (e.dataTransfer.files.length) { resetOutput(); addMergeFiles([...e.dataTransfer.files]); }
+  });
+  els.mergeInput.addEventListener('change', () => {
+    if (els.mergeInput.files.length) { resetOutput(); addMergeFiles([...els.mergeInput.files]); }
+    els.mergeInput.value = '';
+  });
+  els.mergeList.addEventListener('click', e => {
+    const b = e.target.closest('button[data-act]');
+    if (!b || busy) return;
+    const i = Number(b.dataset.i);
+    if (b.dataset.act === 'rm') mergeFiles.splice(i, 1);
+    else {
+      const j = b.dataset.act === 'up' ? i - 1 : i + 1;
+      if (j < 0 || j >= mergeFiles.length) return;
+      [mergeFiles[i], mergeFiles[j]] = [mergeFiles[j], mergeFiles[i]];
+    }
+    resetOutput();
+    renderMergeList();
+    refresh();
+  });
+
+  els.merge.addEventListener('click', async () => {
+    const ready = mergeFiles.filter(f => f.state === 'ok');
+    if (!ready.length || busy) return;
+    busy = true;
+    els.merge.disabled = true;
+    resetOutput();
+    els.logWrap.classList.add('visible');
+    els.logStatus.textContent = 'Running';
+    els.logStatus.className = 'log-status running';
+    try {
+      /* Re-read every file instead of reusing what the file list already parsed:
+         merging mutates the decoded entries in place, so a second run over the same
+         objects would fold an already-merged library into itself. */
+      const inputs = [];
+      for (const f of ready) inputs.push(await inspectBackup(new Uint8Array(await f.file.arrayBuffer()), f.name));
+      const result = await runMerge(inputs, els.mergeTo.value, readOpts(), log);
+      outputBlob = new Blob([result], { type: 'application/octet-stream' });
+      els.logStatus.textContent = 'Done';
+      els.logStatus.className = 'log-status ok';
+      els.download.classList.add('visible');
+    } catch (err) {
+      log(err && err.message ? err.message : String(err), 'error');
+      els.logStatus.textContent = 'Failed';
+      els.logStatus.className = 'log-status err';
+    }
+    busy = false;
+    refresh();
+  });
+
   els.from.addEventListener('change', refresh);
   els.to.addEventListener('change', refresh);
   els.swap.addEventListener('click', () => { const a = els.from.value; els.from.value = els.to.value; els.to.value = a; refresh(); });
@@ -935,13 +1197,7 @@
     log(`input: ${selectedFile.name} (${fmtBytes(selectedFile.size)})`, 'info');
     try {
       const bytes = new Uint8Array(await selectedFile.arrayBuffer());
-      const opts = {
-        useKeiyoushi: els.optKeiyoushi.checked,
-        lang: els.optLang.value,
-        libraryName: (els.optLibName.value || 'Library').trim(),
-        keepUnmatched: els.optKeep.checked,
-      };
-      const result = await runConversion(bytes, from(), to(), kind, opts, log);
+      const result = await runConversion(bytes, from(), to(), kind, readOpts(), log);
       outputBlob = new Blob([result], { type: 'application/octet-stream' });
       els.logStatus.textContent = 'Done';
       els.logStatus.className = 'log-status ok';
@@ -957,7 +1213,7 @@
 
   els.download.addEventListener('click', () => {
     if (!outputBlob) return;
-    const name = els.outputName.value.trim() || ('converted_backup' + APPS[to()].ext);
+    const name = els.outputName.value.trim() || ('converted_backup' + APPS[target()].ext);
     const url = URL.createObjectURL(outputBlob);
     const a = document.createElement('a');
     a.href = url; a.download = name; a.click();
