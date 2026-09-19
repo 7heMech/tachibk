@@ -888,7 +888,32 @@ async function repackKotatsu(buf, log) {
    than read, and its url shape need not match the Mihon one for the same site.
    Title matching is only ever allowed within one already-agreed source id — matching
    on title alone across sources is how you silently merge two different series. */
-const normUrl = u => String(u || '').replace(/^https?:\/\//i, '').replace(/^[^/]*/, '').replace(/\/+$/, '').toLowerCase();
+/* Loose url key: drop the scheme, drop a host *if one is actually there*, drop
+   trailing slashes, lowercase — so an extension that stores `https://site.com/manga/x/`
+   keys the same as one that stores `/manga/x`.
+
+   The host strip used to be an unconditional `^[^/]*`, which only strips a host on
+   strings that contain a `/`. Plenty of sources store an opaque id or slug with no
+   slash at all — AllAnime's `<id><&sep><&sep><slug>`, a bare `115`, `65543-mutiny` —
+   and those were emptied wholesale, so every entry from such a source collapsed onto
+   the single key `<source>~` and merged into one. Reported as "a lot of missing anime"
+   after an Anikku + Komikku merge: 216 anime came out as 63, 45 manga as 35. It also
+   ate the first path segment of any relative url (`series/x` -> `/x`).
+   A host is stripped only when a scheme announced one, or when the leading segment
+   looks like a domain and a path follows it, and the result is never the empty
+   string. */
+function normUrl(u) {
+  const raw = String(u || '');
+  const bare = raw.replace(/^https?:\/\//i, '');
+  const slash = bare.indexOf('/');
+  let s = bare;
+  if (slash > 0) {
+    const host = bare.slice(0, slash);
+    if (bare !== raw || /^[a-z0-9-]+(\.[a-z0-9-]+)+(:\d+)?$/i.test(host)) s = bare.slice(slash);
+  }
+  s = s.replace(/\/+$/, '');
+  return (s || bare || raw).toLowerCase();
+}
 const normTitle = t => String(t || '').toLowerCase().replace(/[^a-z0-9]/g, '');
 const SEP = '';
 const keyExact = e => `${e.source}${SEP}${e.url || ''}`;
@@ -962,13 +987,13 @@ function mergeHistory(a, b) {
   if (!b.history.length) return;
   if (!a.history.length) { a.history = b.history; return; }
   const idx = new Map();
-  for (const h of a.history) idx.set(normUrl(h.url), h);
+  for (const h of a.history) if (!isBlank(h.url)) idx.set(normUrl(h.url), h);
   for (const h of b.history) {
-    const hit = idx.get(normUrl(h.url));
+    const hit = isBlank(h.url) ? undefined : idx.get(normUrl(h.url));
     if (hit) {
       hit.lastRead = maxB(hit.lastRead, h.lastRead);
       hit.readDuration = sumB(hit.readDuration, h.readDuration);
-    } else { a.history.push(h); idx.set(normUrl(h.url), h); }
+    } else { a.history.push(h); if (!isBlank(h.url)) idx.set(normUrl(h.url), h); }
   }
 }
 
@@ -1006,10 +1031,13 @@ function mergeKind(libs, kindKey, log) {
       stats.in++;
       if (e.source === undefined) { stats.noSource++; continue; }
       let hit = exact.get(keyExact(e));
-      if (!hit) { hit = byUrl.get(keyUrl(e)); if (hit) stats.byUrlHits++; }
+      /* The loose tiers key on a *normalised* url and a normalised title. A blank one
+         is not evidence of anything, so it must never become a shared bucket that
+         every entry of a source falls into. */
+      if (!hit && !isBlank(e.url)) { hit = byUrl.get(keyUrl(e)); if (hit) stats.byUrlHits++; }
       /* Title fallback is reserved for entries whose source id was derived rather
          than read out of a backup — i.e. anything that came from a Kotatsu zip. */
-      if (!hit && e._derivedSource) { hit = byTitle.get(keyTitle(e)); if (hit) stats.byTitleHits++; }
+      if (!hit && e._derivedSource && normTitle(e.title)) { hit = byTitle.get(keyTitle(e)); if (hit) stats.byTitleHits++; }
       if (hit) {
         mergeEntryInto(hit, e, stats);
         stats.merged++;
@@ -1018,8 +1046,8 @@ function mergeKind(libs, kindKey, log) {
       }
       out.push(e);
       exact.set(keyExact(e), e);
-      if (!byUrl.has(keyUrl(e))) byUrl.set(keyUrl(e), e);
-      if (!byTitle.has(keyTitle(e))) byTitle.set(keyTitle(e), e);
+      if (!isBlank(e.url) && !byUrl.has(keyUrl(e))) byUrl.set(keyUrl(e), e);
+      if (normTitle(e.title) && !byTitle.has(keyTitle(e))) byTitle.set(keyTitle(e), e);
       if (e.seasonId !== undefined) seasonOwner.set(e._ns + ':' + e.seasonId, e);
     }
   }

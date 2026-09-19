@@ -523,5 +523,73 @@ function kotatsuZip(rows, cats) {
   ok(out.manga.length === 2 && out.categories.length === 2, 'merging a single backup is a no-op pass through');
 }
 
+/* ===========================================================================
+ * Slug urls must not collapse into one entry.
+ *
+ * Reported from real use: Anikku + Komikku into Animetail lost most of the library —
+ * 216 anime came out as 63. The loose match tier normalised urls with an
+ * unconditional `^[^/]*` host strip, which only strips a host on a string that
+ * contains a `/`. Sources that store an opaque id or slug — AllAnime's
+ * `<id><&sep><&sep><slug>`, a bare `115`, `65543-mutiny` — normalised to the empty
+ * string, so every entry from such a source shared the key `<source>~` and merged
+ * into the first one. Nothing about these entries is a duplicate.
+ * ======================================================================== */
+{
+  logs.length = 0;
+  const slugs = ['CoDCuQcqrKk7eWQDc<&sep><&sep>hitoribocchi', '115', '68', '65543-mutiny',
+                 '278-1917', 'remnants-of-gold', 'series/one-piece', 'anime.site.example/x/y'];
+  const one = (() => {
+    const r = new PW();
+    slugs.forEach((u, i) => r.msg(1, mkManga(md, u, 'Series ' + i, [], [chap('/e/1', 'Ep 1', 1, false, 0)])));
+    r.msg(101, src('MangaDex', md));
+    return r.done();
+  })();
+  const a = await M.inspectBackup(await M.gzip(one), 'slugs.tachibk');
+  const out = M.decodeBackup(await M.gunzip(await M.runMerge([a, a], 'mihon', {}, cap)));
+  ok(out.manga.length === slugs.length,
+    `slug-only urls stay distinct: ${out.manga.length} of ${slugs.length}`);
+  ok(!logs.some(l => l.includes('matched on a normalised url')),
+    'and none of them matched on the loose url tier');
+
+  /* The host strip still has to work, which is the whole reason the tier exists:
+     an absolute url and the relative one for the same entry are one manga. */
+  const abs = (() => {
+    const r = new PW();
+    r.msg(1, mkManga(md, 'https://mangadex.org/manga/a/', 'Shared Series', [], []));
+    r.msg(101, src('MangaDex', md));
+    return r.done();
+  })();
+  const rel = (() => {
+    const r = new PW();
+    r.msg(1, mkManga(md, '/manga/a', 'Shared Series', [], []));
+    r.msg(101, src('MangaDex', md));
+    return r.done();
+  })();
+  const m2 = M.decodeBackup(await M.gunzip(await M.runMerge([
+    await M.inspectBackup(await M.gzip(abs), 'abs.tachibk'),
+    await M.inspectBackup(await M.gzip(rel), 'rel.tachibk'),
+  ], 'mihon', {}, log)));
+  ok(m2.manga.length === 1, 'an absolute url still matches the relative one: ' + m2.manga.length);
+
+  /* Entries with no url at all are not evidence of a match either. */
+  const blank = (() => {
+    const r = new PW();
+    r.msg(1, mkManga(md, '', 'First', [], []));
+    r.msg(101, src('MangaDex', md));
+    return r.done();
+  })();
+  const blank2 = (() => {
+    const r = new PW();
+    r.msg(1, mkManga(md, '', 'Second', [], []));
+    r.msg(101, src('MangaDex', md));
+    return r.done();
+  })();
+  const m3 = M.decodeBackup(await M.gunzip(await M.runMerge([
+    await M.inspectBackup(await M.gzip(blank), 'b1.tachibk'),
+    await M.inspectBackup(await M.gzip(blank2), 'b2.tachibk'),
+  ], 'mihon', {}, log)));
+  ok(m3.manga.length === 1, 'blank urls still collapse on the exact tier, not the loose one: ' + m3.manga.length);
+}
+
 console.log(fail ? `\n${fail} FAILURES` : '\nmerge engine verified');
 process.exit(fail ? 1 : 0);

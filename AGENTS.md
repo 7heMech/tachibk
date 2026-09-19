@@ -481,7 +481,24 @@ Source ids are canonicalised first (§3, "The same source under several ids") �
 the tiers below are matching on a key that two forks spell differently for the same site.
 Then: exact `(source, url)`, then `(source, normalisedUrl)`, then — only for
 `_derivedSource` entries — `(source, normalisedTitle)`. Each tier is counted and the last one is logged as
-a warning. Cross-family dedup is genuinely best-effort: a Kotatsu url shape need not match
+a warning.
+
+**A loose key that normalises to nothing is not a match, it is a bucket.** `normUrl`
+exists to make `https://site.com/manga/x/` and `/manga/x` the same key, and it did that
+by stripping `^[^/]*` unconditionally — which is a host strip only for strings that
+contain a `/`. Many sources store an opaque id or slug instead: AllAnime's
+`<id><&sep><&sep><slug>`, a bare `115`, `65543-mutiny`. Every one of those normalised to
+the empty string, so the whole source shared the key `<source>~` and collapsed onto its
+first entry. Reported as "a lot of missing anime": an Anikku + Komikku merge into
+Animetail turned 216 anime into 63 and 45 manga into 35, and it also ate the first path
+segment of any relative url (`series/x` → `/x`). `normUrl` now strips a host only when a
+scheme announced one or the leading segment looks like a domain with a path after it,
+and never returns the empty string; `mergeKind` additionally refuses to key the loose
+tiers on a blank url or a blank normalised title. If you touch either, the invariant to
+hold is that **no loose key may be shared by entries that are not actually the same
+entry** — the collapse is silent, and the user only sees the count at the end.
+`tests/merge.mjs` pins both halves: slug urls stay distinct, and an absolute url still
+matches its relative twin. Cross-family dedup is genuinely best-effort: a Kotatsu url shape need not match
 the Mihon one for the same site (§7 explains why per-parser url correction was rejected),
 and a weakly resolved source id may not match the real one at all.
 
