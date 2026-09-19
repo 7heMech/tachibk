@@ -536,20 +536,34 @@ function kotatsuZip(rows, cats) {
  * ======================================================================== */
 {
   logs.length = 0;
-  const slugs = ['CoDCuQcqrKk7eWQDc<&sep><&sep>hitoribocchi', '115', '68', '65543-mutiny',
-                 '278-1917', 'remnants-of-gold', 'series/one-piece', 'anime.site.example/x/y'];
-  const one = (() => {
+  /* Two different devices, each holding its own opaque urls on the *same* source —
+     the shape that actually broke. Merging a backup with itself would not prove
+     anything here: every cross-file pair would match on the exact tier and never
+     reach the normaliser. `/shared-slug` is in both, so the same fixture also shows
+     that real duplicates still collapse — a normaliser that matched nothing at all
+     would otherwise pass this test. */
+  const slugsA = ['CoDCuQcqrKk7eWQDc<&sep><&sep>hitoribocchi', '115', '68', '65543-mutiny', 'shared-slug'];
+  const slugsB = ['278-1917', 'remnants-of-gold', 'series/one-piece', 'anime.site.example/x/y', 'shared-slug'];
+  const mkSlugBk = (urls, tag) => {
     const r = new PW();
-    slugs.forEach((u, i) => r.msg(1, mkManga(md, u, 'Series ' + i, [], [chap('/e/1', 'Ep 1', 1, false, 0)])));
+    urls.forEach((u, i) => r.msg(1, mkManga(md, u, `${tag} Series ${i}`, [], [chap('/e/1', 'Ep 1', 1, false, 0)])));
     r.msg(101, src('MangaDex', md));
     return r.done();
-  })();
-  const a = await M.inspectBackup(await M.gzip(one), 'slugs.tachibk');
-  const out = M.decodeBackup(await M.gunzip(await M.runMerge([a, a], 'mihon', {}, cap)));
-  ok(out.manga.length === slugs.length,
-    `slug-only urls stay distinct: ${out.manga.length} of ${slugs.length}`);
+  };
+  const a = await M.inspectBackup(await M.gzip(mkSlugBk(slugsA, 'A')), 'deviceA.tachibk');
+  const b = await M.inspectBackup(await M.gzip(mkSlugBk(slugsB, 'B')), 'deviceB.tachibk');
+  const out = M.decodeBackup(await M.gunzip(await M.runMerge([a, b], 'mihon', {}, cap)));
+
+  const want = [...new Set([...slugsA, ...slugsB])].sort();
+  const got = [...new Set(out.manga.map(m => m.url))].sort();
+  const lost = want.filter(u => !got.includes(u));
+  ok(out.manga.length === want.length && !lost.length,
+    `every distinct opaque url survives: ${out.manga.length} of ${want.length}` +
+    (lost.length ? ` — lost ${JSON.stringify(lost)}` : ''));
+  ok(out.manga.filter(m => m.url === 'shared-slug').length === 1,
+    'and the one url both devices really share is merged, not doubled');
   ok(!logs.some(l => l.includes('matched on a normalised url')),
-    'and none of them matched on the loose url tier');
+    'no entry needed the loose url tier: every match here is an exact one');
 
   /* The host strip still has to work, which is the whole reason the tier exists:
      an absolute url and the relative one for the same entry are one manga. */
