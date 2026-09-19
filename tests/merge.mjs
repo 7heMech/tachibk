@@ -523,5 +523,87 @@ function kotatsuZip(rows, cats) {
   ok(out.manga.length === 2 && out.categories.length === 2, 'merging a single backup is a no-op pass through');
 }
 
+/* ===========================================================================
+ * Slug urls must not collapse into one entry.
+ *
+ * Reported from real use: Anikku + Komikku into Animetail lost most of the library —
+ * 216 anime came out as 63. The loose match tier normalised urls with an
+ * unconditional `^[^/]*` host strip, which only strips a host on a string that
+ * contains a `/`. Sources that store an opaque id or slug — AllAnime's
+ * `<id><&sep><&sep><slug>`, a bare `115`, `65543-mutiny` — normalised to the empty
+ * string, so every entry from such a source shared the key `<source>~` and merged
+ * into the first one. Nothing about these entries is a duplicate.
+ * ======================================================================== */
+{
+  logs.length = 0;
+  /* Two different devices, each holding its own opaque urls on the *same* source —
+     the shape that actually broke. Merging a backup with itself would not prove
+     anything here: every cross-file pair would match on the exact tier and never
+     reach the normaliser. `/shared-slug` is in both, so the same fixture also shows
+     that real duplicates still collapse — a normaliser that matched nothing at all
+     would otherwise pass this test. */
+  const slugsA = ['CoDCuQcqrKk7eWQDc<&sep><&sep>hitoribocchi', '115', '68', '65543-mutiny', 'shared-slug'];
+  const slugsB = ['278-1917', 'remnants-of-gold', 'series/one-piece', 'anime.site.example/x/y', 'shared-slug'];
+  const mkSlugBk = (urls, tag) => {
+    const r = new PW();
+    urls.forEach((u, i) => r.msg(1, mkManga(md, u, `${tag} Series ${i}`, [], [chap('/e/1', 'Ep 1', 1, false, 0)])));
+    r.msg(101, src('MangaDex', md));
+    return r.done();
+  };
+  const a = await M.inspectBackup(await M.gzip(mkSlugBk(slugsA, 'A')), 'deviceA.tachibk');
+  const b = await M.inspectBackup(await M.gzip(mkSlugBk(slugsB, 'B')), 'deviceB.tachibk');
+  const out = M.decodeBackup(await M.gunzip(await M.runMerge([a, b], 'mihon', {}, cap)));
+
+  const want = [...new Set([...slugsA, ...slugsB])].sort();
+  const got = [...new Set(out.manga.map(m => m.url))].sort();
+  const lost = want.filter(u => !got.includes(u));
+  ok(out.manga.length === want.length && !lost.length,
+    `every distinct opaque url survives: ${out.manga.length} of ${want.length}` +
+    (lost.length ? ` — lost ${JSON.stringify(lost)}` : ''));
+  ok(out.manga.filter(m => m.url === 'shared-slug').length === 1,
+    'and the one url both devices really share is merged, not doubled');
+  ok(!logs.some(l => l.includes('matched on a normalised url')),
+    'no entry needed the loose url tier: every match here is an exact one');
+
+  /* The host strip still has to work, which is the whole reason the tier exists:
+     an absolute url and the relative one for the same entry are one manga. */
+  const abs = (() => {
+    const r = new PW();
+    r.msg(1, mkManga(md, 'https://mangadex.org/manga/a/', 'Shared Series', [], []));
+    r.msg(101, src('MangaDex', md));
+    return r.done();
+  })();
+  const rel = (() => {
+    const r = new PW();
+    r.msg(1, mkManga(md, '/manga/a', 'Shared Series', [], []));
+    r.msg(101, src('MangaDex', md));
+    return r.done();
+  })();
+  const m2 = M.decodeBackup(await M.gunzip(await M.runMerge([
+    await M.inspectBackup(await M.gzip(abs), 'abs.tachibk'),
+    await M.inspectBackup(await M.gzip(rel), 'rel.tachibk'),
+  ], 'mihon', {}, log)));
+  ok(m2.manga.length === 1, 'an absolute url still matches the relative one: ' + m2.manga.length);
+
+  /* Entries with no url at all are not evidence of a match either. */
+  const blank = (() => {
+    const r = new PW();
+    r.msg(1, mkManga(md, '', 'First', [], []));
+    r.msg(101, src('MangaDex', md));
+    return r.done();
+  })();
+  const blank2 = (() => {
+    const r = new PW();
+    r.msg(1, mkManga(md, '', 'Second', [], []));
+    r.msg(101, src('MangaDex', md));
+    return r.done();
+  })();
+  const m3 = M.decodeBackup(await M.gunzip(await M.runMerge([
+    await M.inspectBackup(await M.gzip(blank), 'b1.tachibk'),
+    await M.inspectBackup(await M.gzip(blank2), 'b2.tachibk'),
+  ], 'mihon', {}, log)));
+  ok(m3.manga.length === 1, 'blank urls still collapse on the exact tier, not the loose one: ' + m3.manga.length);
+}
+
 console.log(fail ? `\n${fail} FAILURES` : '\nmerge engine verified');
 process.exit(fail ? 1 : 0);
